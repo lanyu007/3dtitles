@@ -54,13 +54,21 @@ public class LoadShpActivity extends AppCompatActivity {
     // Shapefile paths in assets
     private static final String SHAPEFILE_PATH = "data/buildings.shp";
     private static final String DBF_PATH = "data/buildings.dbf";
+    private static final String PRJ_PATH = "data/buildings.prj";
+    private static final String SHX_PATH = "data/buildings.shx";
 
     // WorldWind components
     protected WorldWindow wwd;
     protected TextView statusText;
+    protected TextView projectionText;
     protected RenderableLayer shapefileLayer;
     private ExecutorService executorService;
     private Handler mainHandler;
+
+    // Shapefile readers
+    private ProjectionReader projectionReader;
+    private ShapefileIndexReader indexReader;
+    private String projectionInfo = "Unknown";
 
     // Track bounding box of all loaded geometry
     private double minLat = Double.MAX_VALUE;
@@ -83,6 +91,7 @@ public class LoadShpActivity extends AppCompatActivity {
 
         // Get status text view
         statusText = findViewById(R.id.status_text);
+        projectionText = findViewById(R.id.projection_text);
 
         // Create the WorldWindow (a GLSurfaceView) which displays the globe
         wwd = new WorldWindow(this);
@@ -120,6 +129,167 @@ public class LoadShpActivity extends AppCompatActivity {
     }
 
     /**
+     * Load projection information from .prj file
+     * 从 .prj 文件加载投影信息
+     */
+    private void loadProjectionInfo() {
+        try {
+            InputStream prjStream = getAssets().open(PRJ_PATH);
+            projectionReader = new ProjectionReader();
+            projectionReader.read(prjStream);
+            prjStream.close();
+
+            projectionInfo = projectionReader.getProjectionName();
+
+            Log.d(TAG, "=== Projection Information ===");
+            Log.d(TAG, "Name: " + projectionReader.getProjectionName());
+            Log.d(TAG, "EPSG: " + projectionReader.getEPSGCode());
+            Log.d(TAG, "Type: " + (projectionReader.isGeographic() ? "Geographic" : "Projected"));
+            Log.d(TAG, "Needs Transformation: " + projectionReader.needsTransformation());
+
+            if (projectionReader.needsTransformation()) {
+                Log.w(TAG, "⚠️ Data requires coordinate transformation!");
+                updateStatus("Warning: Coordinate transformation needed");
+            }
+
+            // Update UI with projection info
+            updateProjectionDisplay();
+
+        } catch (Exception e) {
+            Log.w(TAG, ".prj file not found or invalid, assuming WGS84: " + e.getMessage());
+            projectionInfo = "WGS84 (assumed)";
+        }
+    }
+
+    /**
+     * Load shapefile index from .shx file
+     * 从 .shx 文件加载 shapefile 索引
+     */
+    private void loadShapefileIndex() {
+        try {
+            InputStream shxStream = getAssets().open(SHX_PATH);
+            indexReader = new ShapefileIndexReader();
+            indexReader.read(shxStream);
+            shxStream.close();
+
+            Log.d(TAG, "=== Shapefile Index ===");
+            Log.d(TAG, "Record count: " + indexReader.getRecordCount());
+
+            // Index will be used for validation after loading
+
+        } catch (Exception e) {
+            Log.w(TAG, ".shx file not found or invalid, will use sequential reading: " + e.getMessage());
+            indexReader = null;
+        }
+    }
+
+    /**
+     * Validate coordinate ranges
+     * 验证坐标范围
+     *
+     * @return true if coordinates appear valid for WGS84
+     */
+    private boolean validateCoordinates() {
+        if (minLat == Double.MAX_VALUE) {
+            Log.e(TAG, "❌ No valid coordinates loaded!");
+            return false;
+        }
+
+        // Check geographic coordinate ranges
+        if (minLat < -90 || maxLat > 90) {
+            Log.w(TAG, "⚠️ Invalid latitude range: [" + minLat + ", " + maxLat + "]");
+            Log.w(TAG, "⚠️ Data may not be in geographic coordinates (WGS84)");
+            updateStatus("Warning: Invalid latitude detected");
+            return false;
+        }
+
+        if (minLon < -180 || maxLon > 180) {
+            Log.w(TAG, "⚠️ Invalid longitude range: [" + minLon + ", " + maxLon + "]");
+            Log.w(TAG, "⚠️ Data may not be in geographic coordinates (WGS84)");
+            updateStatus("Warning: Invalid longitude detected");
+            return false;
+        }
+
+        // Check data range reasonableness
+        double latDiff = maxLat - minLat;
+        double lonDiff = maxLon - minLon;
+        double maxDiff = Math.max(latDiff, lonDiff);
+
+        if (maxDiff > 180) {
+            Log.w(TAG, "⚠️ Data span > 180 degrees, likely projected coordinates");
+            updateStatus("Warning: Large coordinate span detected");
+            return false;
+        }
+
+        Log.d(TAG, "✓ Coordinates valid");
+        Log.d(TAG, "   Latitude: [" + minLat + ", " + maxLat + "]");
+        Log.d(TAG, "   Longitude: [" + minLon + ", " + maxLon + "]");
+        return true;
+    }
+
+    /**
+     * Log complete shapefile metadata report
+     * 记录完整的 shapefile 元数据报告
+     */
+    private void logShapefileMetadata() {
+        Log.d(TAG, "");
+        Log.d(TAG, "========================================");
+        Log.d(TAG, "    Shapefile Metadata Report");
+        Log.d(TAG, "========================================");
+        Log.d(TAG, "File: " + SHAPEFILE_PATH);
+        Log.d(TAG, "");
+        Log.d(TAG, "Projection:");
+        Log.d(TAG, "  - Name: " + projectionInfo);
+        if (projectionReader != null) {
+            Log.d(TAG, "  - EPSG: " + projectionReader.getEPSGCode());
+            Log.d(TAG, "  - Type: " + (projectionReader.isGeographic() ? "Geographic" : "Projected"));
+        }
+        Log.d(TAG, "");
+        Log.d(TAG, "Geometry:");
+        Log.d(TAG, "  - Type: Polygon");
+        Log.d(TAG, "  - Records: " + (indexReader != null ? indexReader.getRecordCount() : loadedPolygons));
+        Log.d(TAG, "  - Bounding Box:");
+        if (minLat != Double.MAX_VALUE) {
+            Log.d(TAG, "      Lat: [" + String.format("%.6f", minLat) + ", " + String.format("%.6f", maxLat) + "]");
+            Log.d(TAG, "      Lon: [" + String.format("%.6f", minLon) + ", " + String.format("%.6f", maxLon) + "]");
+        } else {
+            Log.d(TAG, "      (No coordinates loaded)");
+        }
+        Log.d(TAG, "");
+        Log.d(TAG, "Rendering:");
+        Log.d(TAG, "  - Polygons: " + shapefileLayer.count());
+
+        if (minLat != Double.MAX_VALUE) {
+            double centerLat = (minLat + maxLat) / 2.0;
+            double centerLon = (minLon + maxLon) / 2.0;
+            double latDiff = maxLat - minLat;
+            double lonDiff = maxLon - minLon;
+            double maxDiff = Math.max(latDiff, lonDiff);
+            double range = Math.max(1000, Math.min(maxDiff * 111000 * 1.5, 500000));
+
+            Log.d(TAG, "  - Camera: (" + String.format("%.6f", centerLat) + ", " +
+                  String.format("%.6f", centerLon) + ")");
+            Log.d(TAG, "  - Range: " + String.format("%.0f", range) + " meters");
+        }
+        Log.d(TAG, "========================================");
+        Log.d(TAG, "");
+    }
+
+    /**
+     * Update projection display on UI
+     * 更新 UI 上的投影显示
+     */
+    private void updateProjectionDisplay() {
+        mainHandler.post(() -> {
+            if (projectionText != null && projectionReader != null) {
+                String displayText = "Projection: " + projectionReader.getProjectionName() +
+                                   " (" + projectionReader.getEPSGCode() + ")";
+                projectionText.setText(displayText);
+            }
+        });
+    }
+
+    /**
      * Load and parse the Shapefile asynchronously
      */
     private void loadShapefile() {
@@ -130,6 +300,10 @@ public class LoadShpActivity extends AppCompatActivity {
             DBFReader dbfReader = null;
 
             try {
+                // === Step 0: Load projection and index information ===
+                loadProjectionInfo();
+                loadShapefileIndex();
+
                 // Step 1: Load and parse .shp file
                 updateStatus("Reading geometry file (.shp)...");
                 InputStream shpStream = getAssets().open(SHAPEFILE_PATH);
@@ -202,11 +376,26 @@ public class LoadShpActivity extends AppCompatActivity {
                     Thread.sleep(10);
                 }
 
-                // Step 4: Position camera to view the data
+                // Step 4: Validate coordinates
+                if (!validateCoordinates()) {
+                    Log.w(TAG, "Coordinate validation failed, but continuing...");
+                }
+
+                // Validate index if available
+                if (indexReader != null && indexReader.getRecordCount() != loadedPolygons) {
+                    Log.w(TAG, "⚠️ Index record count (" + indexReader.getRecordCount() +
+                          ") does not match loaded polygons (" + loadedPolygons + ")");
+                }
+
+                // Step 5: Position camera and display metadata
                 mainHandler.post(() -> {
                     positionCamera();
                     updateStatus("Shapefile loaded: " + loadedPolygons + " buildings");
                     wwd.requestRedraw();
+
+                    // Log complete metadata report
+                    logShapefileMetadata();
+
                     Log.d(TAG, "Shapefile loading complete");
                 });
 
@@ -315,42 +504,65 @@ public class LoadShpActivity extends AppCompatActivity {
     /**
      * Position the camera to view the loaded Shapefile content
      * Uses intelligent positioning based on data extent
+     * 定位相机以查看加载的 Shapefile 内容，基于数据范围智能定位
      */
     private void positionCamera() {
         gov.nasa.worldwind.geom.LookAt lookAt = new gov.nasa.worldwind.geom.LookAt();
 
-        // If we have valid bounding box, use it
-        if (minLat != Double.MAX_VALUE && maxLat != -Double.MAX_VALUE) {
-            // Center of bounding box
-            lookAt.latitude = (minLat + maxLat) / 2.0;
-            lookAt.longitude = (minLon + maxLon) / 2.0;
+        // Validate coordinates before positioning
+        if (minLat == Double.MAX_VALUE) {
+            // No coordinates loaded - use default position
+            Log.w(TAG, "Using default camera position (no valid coordinates)");
+            lookAt.latitude = 28.2;
+            lookAt.longitude = 113.0;
             lookAt.altitude = 0;
+            lookAt.range = 50000;
+            wwd.getNavigator().setAsLookAt(wwd.getGlobe(), lookAt);
+            return;
+        }
 
-            // Calculate range based on bounding box size
-            double latDiff = maxLat - minLat;
-            double lonDiff = maxLon - minLon;
-            double maxDiff = Math.max(latDiff, lonDiff);
+        // Check for invalid coordinate ranges
+        if (minLat < -90 || maxLat > 90 || minLon < -180 || maxLon > 180) {
+            Log.w(TAG, "Invalid coordinate ranges detected, using default camera position");
+            lookAt.latitude = 28.2;
+            lookAt.longitude = 113.0;
+            lookAt.altitude = 0;
+            lookAt.range = 50000;
+            wwd.getNavigator().setAsLookAt(wwd.getGlobe(), lookAt);
+            return;
+        }
 
+        // Calculate center of bounding box
+        lookAt.latitude = (minLat + maxLat) / 2.0;
+        lookAt.longitude = (minLon + maxLon) / 2.0;
+        lookAt.altitude = 0;
+
+        // Calculate range based on bounding box size
+        double latDiff = maxLat - minLat;
+        double lonDiff = maxLon - minLon;
+        double maxDiff = Math.max(latDiff, lonDiff);
+
+        // Check for unreasonable data span
+        if (maxDiff > 180) {
+            Log.w(TAG, "⚠️ Data range > 180°, using default camera distance");
+            lookAt.range = 50000;
+        } else {
             // Set range to view entire content (rough estimate: 1 degree ≈ 111km)
             // Add 50% margin for better viewing
             lookAt.range = maxDiff * 111000 * 1.5;
 
-            // Ensure minimum and maximum range
+            // Ensure minimum and maximum range: 1km - 500km
             lookAt.range = Math.max(1000, Math.min(lookAt.range, 500000));
-
-            Log.d(TAG, "Camera positioned to bounding box:");
-            Log.d(TAG, "  Center: (" + lookAt.latitude + ", " + lookAt.longitude + ")");
-            Log.d(TAG, "  Range: " + lookAt.range + " meters");
-            Log.d(TAG, "  Bounds: [" + minLat + ", " + minLon + ", " + maxLat + ", " + maxLon + "]");
-        } else {
-            // Fallback to default position if no geometry was loaded
-            lookAt.latitude = 28.2;
-            lookAt.longitude = 113.0;
-            lookAt.altitude = 0;
-            lookAt.range = 50000; // 50km view range
-
-            Log.d(TAG, "Camera positioned to default location (no geometry found)");
         }
+
+        Log.d(TAG, "Camera positioned:");
+        Log.d(TAG, "  - Center: (" + String.format("%.6f", lookAt.latitude) + ", " +
+              String.format("%.6f", lookAt.longitude) + ")");
+        Log.d(TAG, "  - Range: " + String.format("%.0f", lookAt.range) + " meters");
+        Log.d(TAG, "  - Bounds: [" + String.format("%.6f", minLat) + ", " +
+              String.format("%.6f", minLon) + ", " +
+              String.format("%.6f", maxLat) + ", " +
+              String.format("%.6f", maxLon) + "]");
 
         wwd.getNavigator().setAsLookAt(wwd.getGlobe(), lookAt);
     }

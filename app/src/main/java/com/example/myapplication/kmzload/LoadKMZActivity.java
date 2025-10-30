@@ -109,7 +109,7 @@ public class LoadKMZActivity extends AppCompatActivity {
         executorService.execute(() -> {
             try {
                 // Open the KMZ file from raw resources
-                InputStream kmzInputStream = getResources().openRawResource(R.raw.city);
+                InputStream kmzInputStream = getResources().openRawResource(R.raw.oringe);
 
                 updateStatus("Extracting KMZ archive...");
 
