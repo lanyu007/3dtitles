@@ -17,6 +17,7 @@ import com.example.myapplication.exampledemo.worldwindx.experimental.AtmosphereL
 
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -79,6 +80,12 @@ public class LoadShpActivity extends AppCompatActivity {
     // Statistics
     private int totalPolygons = 0;
     private int loadedPolygons = 0;
+
+    // Building height statistics
+    private int buildingsWithHeight = 0;
+    private double minHeight = Double.MAX_VALUE;
+    private double maxHeight = 0.0;
+    private double totalHeight = 0.0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -271,6 +278,16 @@ public class LoadShpActivity extends AppCompatActivity {
                   String.format("%.6f", centerLon) + ")");
             Log.d(TAG, "  - Range: " + String.format("%.0f", range) + " meters");
         }
+        Log.d(TAG, "");
+        Log.d(TAG, "Building Heights:");
+        if (buildingsWithHeight > 0) {
+            Log.d(TAG, "  - Buildings with height: " + buildingsWithHeight);
+            Log.d(TAG, "  - Min height: " + String.format("%.2f", minHeight) + " meters");
+            Log.d(TAG, "  - Max height: " + String.format("%.2f", maxHeight) + " meters");
+            Log.d(TAG, "  - Avg height: " + String.format("%.2f", (totalHeight / buildingsWithHeight)) + " meters");
+        } else {
+            Log.d(TAG, "  - No height data available (all buildings are 2D)");
+        }
         Log.d(TAG, "========================================");
         Log.d(TAG, "");
     }
@@ -281,11 +298,33 @@ public class LoadShpActivity extends AppCompatActivity {
      */
     private void updateProjectionDisplay() {
         mainHandler.post(() -> {
-            if (projectionText != null && projectionReader != null) {
-                String displayText = "Projection: " + projectionReader.getProjectionName() +
-                                   " (" + projectionReader.getEPSGCode() + ")";
-                projectionText.setText(displayText);
+            if (projectionText == null) {
+                Log.w(TAG, "Projection text view not found");
+                return;
             }
+
+            String displayText;
+            if (projectionReader != null) {
+                String epsg = projectionReader.getEPSGCode();
+                String name = projectionReader.getProjectionName();
+
+                // 简洁的显示格式
+                if (epsg != null && !epsg.isEmpty()) {
+                    displayText = name + " (" + epsg + ")";
+                } else {
+                    displayText = name;
+                }
+
+                // 如果需要坐标转换，添加警告标记
+                if (projectionReader.needsTransformation()) {
+                    displayText += " ⚠️";
+                }
+            } else {
+                displayText = "Projection: Unknown";
+            }
+
+            projectionText.setText(displayText);
+            Log.d(TAG, "Updated projection display: " + displayText);
         });
     }
 
@@ -354,9 +393,9 @@ public class LoadShpActivity extends AppCompatActivity {
                         // Create polygon with first part (outer ring)
                         // Note: Additional parts would be holes, which can be handled separately
                         if (!record.parts.isEmpty()) {
-                            Polygon polygon = createPolygonFromShapefile(record, attributes);
-                            if (polygon != null) {
-                                batchPolygons.add(polygon);
+                            List<Polygon> buildingPolygons = createBuilding3D(record, attributes);
+                            if (!buildingPolygons.isEmpty()) {
+                                batchPolygons.addAll(buildingPolygons);
                                 loadedPolygons++;
                             }
                         }
@@ -390,11 +429,10 @@ public class LoadShpActivity extends AppCompatActivity {
                 // Step 5: Position camera and display metadata
                 mainHandler.post(() -> {
                     positionCamera();
+                    updateProjectionDisplay();  // 确保投影信息显示 / Ensure projection info is displayed
+                    logShapefileMetadata();
                     updateStatus("Shapefile loaded: " + loadedPolygons + " buildings");
                     wwd.requestRedraw();
-
-                    // Log complete metadata report
-                    logShapefileMetadata();
 
                     Log.d(TAG, "Shapefile loading complete");
                 });
@@ -411,62 +449,289 @@ public class LoadShpActivity extends AppCompatActivity {
     }
 
     /**
-     * Create a WorldWind Polygon from a Shapefile polygon record
+     * 从属性数据中提取建筑高度
+     * Extract building height from attribute data
+     *
+     * 尝试从以下字段读取（按优先级）：
+     * Tries to read from the following fields (by priority):
+     * 1. height / HEIGHT
+     * 2. elevation / ELEVATION
+     * 3. floors / FLOORS（楼层数 × 3米 / floor count × 3 meters）
+     * 4. 默认 0 / default 0
+     *
+     * @param attributes DBF 属性数据 / DBF attribute data
+     * @return 建筑高度（米），范围 0-10000 / Building height (meters), range 0-10000
+     */
+    private double extractHeight(Map<String, Object> attributes) {
+        if (attributes == null) {
+            return 0.0;
+        }
+
+        // 按优先级尝试不同的高度字段
+        // Try different height fields by priority
+        String[] heightFields = {"height", "HEIGHT", "elevation", "ELEVATION",
+                                "elev", "ELEV", "alt", "ALT"};
+
+        for (String field : heightFields) {
+            if (attributes.containsKey(field)) {
+                Object heightObj = attributes.get(field);
+
+                // 处理不同的数据类型
+                // Handle different data types
+                if (heightObj instanceof Number) {
+                    double height = ((Number) heightObj).doubleValue();
+
+                    // 验证高度合理性（0-10000 米）
+                    // Validate height reasonableness (0-10000 meters)
+                    if (height >= 0 && height <= 10000) {
+                        Log.d(TAG, "Extracted height: " + height + " from field: " + field);
+                        return height;
+                    } else {
+                        Log.w(TAG, "Invalid height value: " + height + " from field: " + field);
+                    }
+                } else if (heightObj instanceof String) {
+                    try {
+                        double height = Double.parseDouble((String) heightObj);
+                        if (height >= 0 && height <= 10000) {
+                            return height;
+                        }
+                    } catch (NumberFormatException e) {
+                        Log.w(TAG, "Failed to parse height: " + heightObj);
+                    }
+                }
+            }
+        }
+
+        // 尝试从楼层数计算高度（假设每层 3 米）
+        // Try to calculate height from floor count (assume 3 meters per floor)
+        String[] floorFields = {"floors", "FLOORS", "floor", "FLOOR", "storeys", "STOREYS"};
+        for (String field : floorFields) {
+            if (attributes.containsKey(field)) {
+                Object floorsObj = attributes.get(field);
+                if (floorsObj instanceof Number) {
+                    int floors = ((Number) floorsObj).intValue();
+                    if (floors > 0 && floors <= 200) {
+                        double calculatedHeight = floors * 3.0;
+                        Log.d(TAG, "Calculated height from floors: " + calculatedHeight);
+                        return calculatedHeight;
+                    }
+                }
+            }
+        }
+
+        return 0.0;  // 默认高度 / Default height
+    }
+
+    /**
+     * 根据建筑高度生成颜色（热力图效果）
+     * Generate color based on building height (heatmap effect)
+     *
+     * 颜色映射 / Color mapping:
+     * - 0-10m: 浅蓝色（低矮建筑）/ Light blue (low buildings)
+     * - 10-30m: 绿色（中等建筑）/ Green (medium buildings)
+     * - 30-60m: 黄色（较高建筑）/ Yellow (tall buildings)
+     * - 60-100m: 橙色（高层建筑）/ Orange (high-rise buildings)
+     * - 100m+: 红色（超高层建筑）/ Red (skyscrapers)
+     *
+     * @param height 建筑高度（米）/ Building height (meters)
+     * @return 对应的颜色 / Corresponding color
+     */
+    private Color getColorByHeight(double height) {
+        if (height < 10) {
+            // 浅蓝色 / Light blue
+            return new Color(0.5f, 0.7f, 1.0f, 0.6f);
+        } else if (height < 30) {
+            // 绿色 / Green
+            return new Color(0.3f, 0.8f, 0.3f, 0.6f);
+        } else if (height < 60) {
+            // 黄色 / Yellow
+            return new Color(1.0f, 0.9f, 0.3f, 0.6f);
+        } else if (height < 100) {
+            // 橙色 / Orange
+            return new Color(1.0f, 0.6f, 0.2f, 0.6f);
+        } else {
+            // 红色（超高层）/ Red (skyscrapers)
+            return new Color(1.0f, 0.3f, 0.2f, 0.6f);
+        }
+    }
+
+    /**
+     * Create a 3D building from a Shapefile polygon record
+     * Creates bottom, top, and side polygons to form a pseudo-3D building effect
      *
      * @param record Shapefile polygon record containing geometry
      * @param attributes Optional attribute data from DBF file
-     * @return Polygon renderable object, or null if creation fails
+     * @return List of Polygon renderables (bottom, top, and sides), or empty list if creation fails
      */
-    private Polygon createPolygonFromShapefile(ShapefileReader.PolygonRecord record,
-                                               Map<String, Object> attributes) {
+    private List<Polygon> createBuilding3D(ShapefileReader.PolygonRecord record,
+                                           Map<String, Object> attributes) {
+        List<Polygon> buildingPolygons = new ArrayList<>();
+
         try {
             // Use the first part (outer ring)
             List<ShapefileReader.Point> ring = record.parts.get(0);
 
-            // Convert Shapefile points to WorldWind positions
-            List<Position> positions = new ArrayList<>();
-            for (ShapefileReader.Point point : ring) {
-                // Shapefile coordinates are (longitude, latitude)
-                positions.add(Position.fromDegrees(point.y, point.x, 0));
+            // 提取建筑高度（如果有属性数据）
+            // Extract building height (if attribute data is available)
+            double buildingHeight = extractHeight(attributes);
 
-                // Update bounding box
+            // Update bounding box for all points
+            for (ShapefileReader.Point point : ring) {
                 updateBoundingBox(point.y, point.x);
             }
 
-            // Ensure polygon is closed
-            if (positions.size() > 0) {
-                Position first = positions.get(0);
-                Position last = positions.get(positions.size() - 1);
+            // 更新高度统计信息
+            // Update height statistics
+            if (buildingHeight > 0) {
+                buildingsWithHeight++;
+                minHeight = Math.min(minHeight, buildingHeight);
+                maxHeight = Math.max(maxHeight, buildingHeight);
+                totalHeight += buildingHeight;
+                Log.d(TAG, "Creating 3D building with height: " + buildingHeight + " meters");
+            }
+
+            // Get base color for this building based on height
+            Color baseColor = getColorByHeight(buildingHeight);
+
+            // === 1. Create bottom polygon (height = 0) ===
+            List<Position> basePositions = new ArrayList<>();
+            for (ShapefileReader.Point point : ring) {
+                basePositions.add(Position.fromDegrees(point.y, point.x, 0));
+            }
+
+            // Ensure closed
+            if (basePositions.size() > 0) {
+                Position first = basePositions.get(0);
+                Position last = basePositions.get(basePositions.size() - 1);
                 if (first.latitude != last.latitude || first.longitude != last.longitude) {
-                    positions.add(first);
+                    basePositions.add(first);
                 }
             }
 
-            // Create polygon with building-appropriate styling
-            ShapeAttributes attrs = new ShapeAttributes();
-            attrs.setInteriorColor(new Color(0.2f, 0.5f, 0.8f, 0.6f)); // Semi-transparent blue
-            attrs.setOutlineColor(new Color(0.1f, 0.3f, 0.6f, 1.0f)); // Dark blue
-            attrs.setOutlineWidth(2f);
-            attrs.setDrawInterior(true);
-            attrs.setDrawOutline(true);
+            // Bottom polygon attributes - darker color, semi-transparent
+            ShapeAttributes bottomAttrs = new ShapeAttributes();
+            Color bottomColor = new Color(
+                baseColor.red * 0.5f,
+                baseColor.green * 0.5f,
+                baseColor.blue * 0.5f,
+                0.3f
+            );
+            bottomAttrs.setInteriorColor(bottomColor);
+            bottomAttrs.setOutlineColor(new Color(0.3f, 0.3f, 0.3f, 0.5f));
+            bottomAttrs.setOutlineWidth(1f);
+            bottomAttrs.setDrawInterior(true);
+            bottomAttrs.setDrawOutline(true);
 
-            Polygon polygon = new Polygon(positions, attrs);
-            polygon.setFollowTerrain(true);
-            polygon.setAltitudeMode(gov.nasa.worldwind.WorldWind.CLAMP_TO_GROUND);
+            Polygon bottomPolygon = new Polygon(basePositions, bottomAttrs);
+            bottomPolygon.setAltitudeMode(gov.nasa.worldwind.WorldWind.RELATIVE_TO_GROUND);
+            bottomPolygon.setFollowTerrain(false);
+            buildingPolygons.add(bottomPolygon);
+
+            // === 2. Create top polygon (height = buildingHeight) ===
+            List<Position> topPositions = new ArrayList<>();
+            for (ShapefileReader.Point point : ring) {
+                topPositions.add(Position.fromDegrees(point.y, point.x, buildingHeight));
+            }
+
+            // Ensure closed
+            if (topPositions.size() > 0) {
+                Position first = topPositions.get(0);
+                Position last = topPositions.get(topPositions.size() - 1);
+                if (first.latitude != last.latitude || first.longitude != last.longitude) {
+                    topPositions.add(first);
+                }
+            }
+
+            // Reverse order for correct normal direction (outward facing)
+            Collections.reverse(topPositions);
+
+            // Top polygon attributes - full color
+            ShapeAttributes topAttrs = new ShapeAttributes();
+            topAttrs.setInteriorColor(baseColor);
+            topAttrs.setOutlineColor(new Color(
+                baseColor.red * 0.7f,
+                baseColor.green * 0.7f,
+                baseColor.blue * 0.7f,
+                1.0f
+            ));
+            topAttrs.setOutlineWidth(2f);
+            topAttrs.setDrawInterior(true);
+            topAttrs.setDrawOutline(true);
+
+            Polygon topPolygon = new Polygon(topPositions, topAttrs);
+            topPolygon.setAltitudeMode(gov.nasa.worldwind.WorldWind.RELATIVE_TO_GROUND);
+            topPolygon.setFollowTerrain(false);
+            buildingPolygons.add(topPolygon);
+
+            // === 3. Create side polygons (connecting bottom and top) ===
+            Color sideColor = new Color(
+                baseColor.red * 0.6f,
+                baseColor.green * 0.6f,
+                baseColor.blue * 0.6f,
+                0.7f
+            );
+
+            // Get positions without the closing point for side generation
+            List<Position> baseRing = new ArrayList<>();
+            List<Position> topRing = new ArrayList<>();
+            for (ShapefileReader.Point point : ring) {
+                baseRing.add(Position.fromDegrees(point.y, point.x, 0));
+                topRing.add(Position.fromDegrees(point.y, point.x, buildingHeight));
+            }
+
+            // Reverse top ring to match bottom orientation
+            Collections.reverse(topRing);
+
+            // Create a side polygon for each edge
+            for (int i = 0; i < baseRing.size() - 1; i++) {
+                List<Position> sidePositions = new ArrayList<>();
+
+                // Create trapezoid: basePt1 -> basePt2 -> topPt2 -> topPt1 -> basePt1 (closed)
+                Position basePt1 = baseRing.get(i);
+                Position basePt2 = baseRing.get(i + 1);
+                Position topPt1 = topRing.get(topRing.size() - 1 - i);
+                Position topPt2 = topRing.get(topRing.size() - 2 - i);
+
+                sidePositions.add(basePt1);
+                sidePositions.add(basePt2);
+                sidePositions.add(topPt2);
+                sidePositions.add(topPt1);
+                sidePositions.add(basePt1); // Close the polygon
+
+                ShapeAttributes sideAttrs = new ShapeAttributes();
+                sideAttrs.setInteriorColor(sideColor);
+                sideAttrs.setOutlineColor(new Color(
+                    sideColor.red * 0.8f,
+                    sideColor.green * 0.8f,
+                    sideColor.blue * 0.8f,
+                    0.8f
+                ));
+                sideAttrs.setOutlineWidth(1f);
+                sideAttrs.setDrawInterior(true);
+                sideAttrs.setDrawOutline(true);
+
+                Polygon sidePolygon = new Polygon(sidePositions, sideAttrs);
+                sidePolygon.setAltitudeMode(gov.nasa.worldwind.WorldWind.RELATIVE_TO_GROUND);
+                sidePolygon.setFollowTerrain(false);
+                buildingPolygons.add(sidePolygon);
+            }
 
             // Set display name from attributes if available
             if (attributes != null) {
                 String name = getDisplayName(attributes);
                 if (name != null) {
-                    polygon.setDisplayName(name);
+                    for (Polygon polygon : buildingPolygons) {
+                        polygon.setDisplayName(name);
+                    }
                 }
             }
 
-            return polygon;
+            Log.d(TAG, "Created " + buildingPolygons.size() + " polygons for 3D building (height: " + buildingHeight + "m)");
+            return buildingPolygons;
 
         } catch (Exception e) {
-            Log.w(TAG, "Error creating polygon: " + e.getMessage());
-            return null;
+            Log.w(TAG, "Error creating 3D building: " + e.getMessage());
+            return buildingPolygons; // Return whatever was created (may be empty)
         }
     }
 

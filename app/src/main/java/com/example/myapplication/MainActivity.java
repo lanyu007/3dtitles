@@ -11,6 +11,7 @@ import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.example.myapplication.exampledemo.worldwindx.GeneralGlobeActivity;
+import com.example.myapplication.geoload.LoadGEOActivity;
 import com.example.myapplication.kmzload.LoadKMZActivity;
 import com.example.myapplication.loadkml.LoadKMLActivity;
 import com.example.myapplication.shpload.LoadShpActivity;
@@ -89,8 +90,9 @@ public class MainActivity extends AppCompatActivity {
 //            GeneralGlobeActivity.start(this);
 //            WorldWindNavActivity.start(this);
 //            LoadKMZActivity.start(this);
-//            LoadShpActivity.start(this);
-            LoadKMLActivity.start(this);
+            LoadShpActivity.start(this);
+//            LoadKMLActivity.start(this);
+//            LoadGEOActivity.start(this);
         });
 
         // 增加点大小按钮
