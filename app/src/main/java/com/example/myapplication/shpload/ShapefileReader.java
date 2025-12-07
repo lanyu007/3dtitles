@@ -27,6 +27,7 @@ public class ShapefileReader {
     private static final int SHAPE_POLYLINE = 3;
     private static final int SHAPE_POLYGON = 5;
     private static final int SHAPE_MULTIPOINT = 8;
+    private static final int SHAPE_POINT_Z = 11;  // PointZ with Z and M values
 
     // File header size
     private static final int HEADER_SIZE = 100;
@@ -34,6 +35,12 @@ public class ShapefileReader {
     private int shapeType;
     private double[] boundingBox = new double[4]; // minX, minY, maxX, maxY
     private List<PolygonRecord> polygonRecords = new ArrayList<>();
+    private List<PointZRecord> pointZRecords = new ArrayList<>();  // Store PointZ records
+
+    // Statistics counters for debugging
+    private int skippedRecordCount = 0;
+    private int processedPointZCount = 0;
+    private int processedPolygonCount = 0;
 
     /**
      * Polygon record containing geometry data
@@ -58,6 +65,45 @@ public class ShapefileReader {
             this.x = x;
             this.y = y;
         }
+    }
+
+    /**
+     * PointZ record containing 3D point data with Z and M values
+     */
+    public static class PointZRecord {
+        public double x; // Longitude (after conversion from Web Mercator)
+        public double y; // Latitude (after conversion from Web Mercator)
+        public double z; // Z value (elevation/height)
+        public double m; // M value (measure, optional)
+
+        public PointZRecord(double x, double y, double z, double m) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.m = m;
+        }
+    }
+
+    /**
+     * Convert Web Mercator (EPSG:3857) coordinates to WGS84 (EPSG:4326)
+     * Web Mercator uses meters as units, WGS84 uses degrees
+     *
+     * @param x X coordinate in Web Mercator (meters)
+     * @param y Y coordinate in Web Mercator (meters)
+     * @return Array containing [longitude, latitude] in WGS84 degrees
+     */
+    private double[] convertWebMercatorToWGS84(double x, double y) {
+        final double EARTH_RADIUS = 6378137.0;
+        final double RAD_TO_DEG = 180.0 / Math.PI;
+
+        // 经度转换: lon = (x / R) * (180 / π)
+        double lon = (x / EARTH_RADIUS) * RAD_TO_DEG;
+
+        // 纬度转换: lat = (2 * atan(exp(y / R)) - π/2) * (180 / π)
+        // 这是标准的Web Mercator逆投影公式
+        double lat = (2.0 * Math.atan(Math.exp(y / EARTH_RADIUS)) - Math.PI / 2.0) * RAD_TO_DEG;
+
+        return new double[]{lon, lat};
     }
 
     /**
@@ -88,7 +134,13 @@ public class ShapefileReader {
             }
         }
 
-        Log.d(TAG, "Loaded " + polygonRecords.size() + " polygon records");
+        // Output final statistics
+        Log.d(TAG, "=== Shapefile Loading Statistics ===");
+        Log.d(TAG, "Total records processed: " + recordCount);
+        Log.d(TAG, "Polygon records: " + processedPolygonCount + " (stored: " + polygonRecords.size() + ")");
+        Log.d(TAG, "PointZ records: " + processedPointZCount + " (stored: " + pointZRecords.size() + ")");
+        Log.d(TAG, "Skipped records: " + skippedRecordCount);
+        Log.d(TAG, "===================================");
     }
 
     /**
@@ -142,20 +194,54 @@ public class ShapefileReader {
         buffer.order(ByteOrder.LITTLE_ENDIAN);
         int recordShapeType = buffer.getInt();
 
+        // Log first 10 records to show what shape types we're seeing
+        if (recordNumber <= 10) {
+            Log.d(TAG, "Record #" + recordNumber + ": shapeType=" + recordShapeType +
+                    " (" + getShapeTypeName(recordShapeType) + "), contentLength=" + contentLength + " words");
+        }
+
         // Handle null shapes
         if (recordShapeType == SHAPE_NULL) {
-            Log.d(TAG, "Skipping null shape in record " + recordNumber);
+            if (recordNumber <= 10) {
+                Log.d(TAG, "  -> Skipping null shape in record " + recordNumber);
+            }
+            skippedRecordCount++;
             return;
         }
 
-        // Only handle polygon shapes
+        // Handle polygon shapes
         if (recordShapeType == SHAPE_POLYGON) {
             PolygonRecord polygon = readPolygon(buffer);
             polygonRecords.add(polygon);
-        } else {
+            processedPolygonCount++;
+            if (recordNumber <= 10) {
+                Log.d(TAG, "  -> Successfully processed Polygon record");
+            }
+        }
+        // Handle PointZ shapes
+        else if (recordShapeType == SHAPE_POINT_Z) {
+            // Calculate where this record's content ends
+            int recordContentStart = buffer.position() - 4; // -4 because shapeType already read
+
+            PointZRecord point = readPointZ(buffer, recordNumber);
+            pointZRecords.add(point);
+            processedPointZCount++;
+
+            // Ensure buffer is positioned at the next record
+            int nextRecordPosition = recordContentStart + (contentLength * 2);
+            buffer.position(nextRecordPosition);
+
+            if (recordNumber <= 10) {
+                Log.d(TAG, "  -> Successfully processed PointZ record");
+            }
+        }
+        else {
             // Skip unsupported geometry types
-            Log.w(TAG, "Skipping unsupported shape type " + recordShapeType +
-                    " in record " + recordNumber);
+            if (skippedRecordCount < 10 || recordNumber <= 10) {
+                Log.w(TAG, "Skipping unsupported shape type " + recordShapeType +
+                        " (" + getShapeTypeName(recordShapeType) + ") in record " + recordNumber);
+            }
+            skippedRecordCount++;
             // Skip remaining content
             int bytesToSkip = (contentLength * 2) - 4; // Already read shape type
             buffer.position(buffer.position() + bytesToSkip);
@@ -210,6 +296,37 @@ public class ShapefileReader {
     }
 
     /**
+     * Read a PointZ geometry from the buffer
+     * PointZ format: X (double), Y (double), Z (double), M (double)
+     * Automatically converts from Web Mercator (EPSG:3857) to WGS84 (EPSG:4326)
+     */
+    private PointZRecord readPointZ(ByteBuffer buffer, int recordNumber) throws IOException {
+        // Read X and Y coordinates (Web Mercator meters)
+        double x = buffer.getDouble();
+        double y = buffer.getDouble();
+
+        // Read Z coordinate (elevation/height)
+        double z = buffer.getDouble();
+
+        // Read M value (measure, optional - may be NaN)
+        double m = buffer.getDouble();
+
+        // Convert Web Mercator coordinates to WGS84 lat/lon
+        double[] wgs84 = convertWebMercatorToWGS84(x, y);
+        double lon = wgs84[0];
+        double lat = wgs84[1];
+
+        // Only log first 10 records to avoid flooding the log
+        if (recordNumber <= 10) {
+            Log.d(TAG, "  PointZ detail: Web Mercator (" + x + ", " + y + ") -> WGS84 (" +
+                    String.format("%.6f", lat) + ", " + String.format("%.6f", lon) +
+                    "), Z=" + z + ", M=" + m);
+        }
+
+        return new PointZRecord(lon, lat, z, m);
+    }
+
+    /**
      * Read all bytes from input stream
      */
     private byte[] readAllBytes(InputStream inputStream) throws IOException {
@@ -246,6 +363,7 @@ public class ShapefileReader {
             case SHAPE_POLYLINE: return "Polyline";
             case SHAPE_POLYGON: return "Polygon";
             case SHAPE_MULTIPOINT: return "Multipoint";
+            case SHAPE_POINT_Z: return "PointZ";
             default: return "Unknown (" + type + ")";
         }
     }
@@ -265,6 +383,10 @@ public class ShapefileReader {
     }
 
     public int getRecordCount() {
-        return polygonRecords.size();
+        return polygonRecords.size() + pointZRecords.size();
+    }
+
+    public List<PointZRecord> getPointZRecords() {
+        return pointZRecords;
     }
 }

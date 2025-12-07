@@ -13,7 +13,10 @@ import androidx.appcompat.app.AppCompatActivity;
 import com.example.myapplication.exampledemo.worldwindx.GeneralGlobeActivity;
 import com.example.myapplication.geoload.LoadGEOActivity;
 import com.example.myapplication.kmzload.LoadKMZActivity;
+import com.example.myapplication.lasload.LoadLASActivity;
 import com.example.myapplication.loadkml.LoadKMLActivity;
+import com.example.myapplication.shapeload.LoadShapeActivity;
+import com.example.myapplication.shapeload.MyShapeLoadActivity;
 import com.example.myapplication.shpload.LoadShpActivity;
 import com.example.myapplication.threedimentionmap.WorldWindOfflineMapActivity;
 import com.example.myapplication.worldwindnav.WorldWindNavActivity;
@@ -90,9 +93,12 @@ public class MainActivity extends AppCompatActivity {
 //            GeneralGlobeActivity.start(this);
 //            WorldWindNavActivity.start(this);
 //            LoadKMZActivity.start(this);
-            LoadShpActivity.start(this);
+//            LoadShpActivity.start(this);
 //            LoadKMLActivity.start(this);
+//            LoadShapeActivity.start(this);
 //            LoadGEOActivity.start(this);
+            MyShapeLoadActivity.start(this);
+//            LoadLASActivity.start(this);
         });
 
         // 增加点大小按钮

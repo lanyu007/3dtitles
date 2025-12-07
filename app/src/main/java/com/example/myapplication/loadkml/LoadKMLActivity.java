@@ -2,6 +2,7 @@ package com.example.myapplication.loadkml;
 
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Typeface;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -26,17 +27,20 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import gov.nasa.worldwind.WorldWindow;
+import gov.nasa.worldwind.geom.Offset;
 import gov.nasa.worldwind.geom.Position;
 import gov.nasa.worldwind.globe.BasicElevationCoverage;
 import gov.nasa.worldwind.layer.BackgroundLayer;
 import gov.nasa.worldwind.layer.BlueMarbleLandsatLayer;
 import gov.nasa.worldwind.layer.RenderableLayer;
 import gov.nasa.worldwind.render.Color;
+import gov.nasa.worldwind.shape.Label;
 import gov.nasa.worldwind.shape.Path;
 import gov.nasa.worldwind.shape.Placemark;
 import gov.nasa.worldwind.shape.PlacemarkAttributes;
 import gov.nasa.worldwind.shape.Polygon;
 import gov.nasa.worldwind.shape.ShapeAttributes;
+import gov.nasa.worldwind.shape.TextAttributes;
 
 /**
  * Activity for loading and displaying KML files using WorldWindow
@@ -147,7 +151,7 @@ public class LoadKMLActivity extends AppCompatActivity {
             try {
                 // Open the KML file from raw resources
                 // 从资源文件中打开 KML 文件
-                kmlInputStream = getResources().openRawResource(R.raw.buildings);
+                kmlInputStream = getResources().openRawResource(R.raw.hunan);
 
                 updateStatus("Parsing KML file...");
                 Log.d(TAG, "Parsing KML file...");
@@ -203,9 +207,9 @@ public class LoadKMLActivity extends AppCompatActivity {
         factory.setNamespaceAware(true);
         XmlPullParser parser = factory.newPullParser();
 
-        // IMPORTANT: buildings.kml uses GB2312 encoding for Chinese characters
-        // 重要：buildings.kml 使用 GB2312 编码处理中文字符
-        parser.setInput(new InputStreamReader(inputStream, "GB2312"));
+        // IMPORTANT: hunan.kml uses UTF-8 encoding for Chinese characters
+        // 重要：hunan.kml 使用 UTF-8 编码处理中文字符
+        parser.setInput(new InputStreamReader(inputStream, "UTF-8"));
 
         int eventType = parser.getEventType();
         String currentTag = null;
@@ -372,8 +376,8 @@ public class LoadKMLActivity extends AppCompatActivity {
     }
 
     /**
-     * Create a Placemark for Point geometry
-     * 为 Point 几何体创建 Placemark
+     * Create a Placemark for Point geometry with text label
+     * 为 Point 几何体创建带文字标签的 Placemark
      *
      * @param position Position of the point
      *                 点的位置
@@ -381,15 +385,39 @@ public class LoadKMLActivity extends AppCompatActivity {
      *             地标名称
      */
     private void createPlacemark(Position position, String name) {
+        // Create placemark icon
+        // 创建地标图标
         PlacemarkAttributes attrs = new PlacemarkAttributes();
         attrs.setImageColor(new Color(1f, 0f, 0f, 1f)); // Red / 红色
-        attrs.setImageScale(2.0);
+        attrs.setImageScale(2.5);  // Larger icon for better visibility / 更大的图标以提高可见性
 
         Placemark placemark = new Placemark(position, attrs, name);
         placemark.setDisplayName(name != null ? name : "Point");
+        placemark.setAltitudeMode(gov.nasa.worldwind.WorldWind.CLAMP_TO_GROUND);
 
         kmlLayer.addRenderable(placemark);
-        Log.d(TAG, "Created placemark: " + name + " at " + position);
+
+        // Create text label for place name
+        // 创建地名文字标签
+        if (name != null && !name.isEmpty()) {
+            TextAttributes textAttrs = new TextAttributes()
+                .setTypeface(Typeface.DEFAULT_BOLD)              // Bold font / 粗体字
+                .setTextSize(24f)                                // Font size / 字体大小
+                .setTextColor(new Color(1f, 1f, 1f, 1f))        // White color / 白色
+                .setTextOffset(Offset.bottomCenter())            // Position below the icon / 位于图标下方
+//                .setDrawOutline(true)                            // Draw outline for readability / 绘制轮廓以提高可读性
+                .setOutlineColor(new Color(0f, 0f, 0f, 0.8f))  // Black outline / 黑色轮廓
+                .setOutlineWidth(2f);                            // Outline width / 轮廓宽度
+
+            Label label = new Label(position, name, textAttrs);
+            label.setDisplayName(name);
+            label.setAltitudeMode(gov.nasa.worldwind.WorldWind.CLAMP_TO_GROUND);
+
+            kmlLayer.addRenderable(label);
+            Log.d(TAG, "Created placemark with label: " + name + " at " + position);
+        } else {
+            Log.d(TAG, "Created placemark: " + name + " at " + position);
+        }
     }
 
     /**

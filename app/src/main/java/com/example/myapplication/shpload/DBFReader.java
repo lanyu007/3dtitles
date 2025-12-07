@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -15,6 +16,7 @@ import java.util.Map;
 /**
  * Reader for dBASE (.dbf) format - Shapefile attribute table
  * Supports reading field definitions and record data
+ * Supports custom character encoding from .cpg file
  */
 public class DBFReader {
 
@@ -36,6 +38,7 @@ public class DBFReader {
     private int recordLength;
     private List<FieldDescriptor> fields = new ArrayList<>();
     private List<Map<String, Object>> records = new ArrayList<>();
+    private Charset charset = StandardCharsets.UTF_8; // Default charset
 
     /**
      * Field descriptor containing field metadata
@@ -60,9 +63,50 @@ public class DBFReader {
     }
 
     /**
+     * Set the character encoding to use for reading string fields
+     * Should be called before read() to use custom encoding from .cpg file
+     *
+     * @param charsetName The charset name (e.g., "UTF-8", "GBK", "GB2312", "ISO-8859-1")
+     */
+    public void setCharset(String charsetName) {
+        try {
+            this.charset = Charset.forName(charsetName);
+            Log.d(TAG, "Character encoding set to: " + charsetName);
+        } catch (Exception e) {
+            Log.w(TAG, "Unsupported charset: " + charsetName + ", using UTF-8");
+            this.charset = StandardCharsets.UTF_8;
+        }
+    }
+
+    /**
+     * Set the character encoding to use for reading string fields
+     *
+     * @param charset The Charset object
+     */
+    public void setCharset(Charset charset) {
+        this.charset = charset;
+        Log.d(TAG, "Character encoding set to: " + charset.name());
+    }
+
+    /**
      * Read and parse a DBF file from input stream
      */
     public void read(InputStream inputStream) throws IOException {
+        read(inputStream, null);
+    }
+
+    /**
+     * Read and parse a DBF file from input stream with custom character encoding
+     *
+     * @param inputStream The DBF file input stream
+     * @param charsetName The character encoding to use (e.g., "UTF-8", "GBK", "GB2312")
+     */
+    public void read(InputStream inputStream, String charsetName) throws IOException {
+        // Set charset if provided
+        if (charsetName != null && !charsetName.isEmpty()) {
+            setCharset(charsetName);
+        }
+
         // Read entire file into byte array
         byte[] fileData = readAllBytes(inputStream);
         ByteBuffer buffer = ByteBuffer.wrap(fileData);
@@ -76,6 +120,7 @@ public class DBFReader {
         Log.d(TAG, "  Header length: " + headerLength);
         Log.d(TAG, "  Record length: " + recordLength);
         Log.d(TAG, "  Fields: " + fields.size());
+        Log.d(TAG, "  Charset: " + charset.name());
 
         // Read field descriptors
         readFields(buffer);
@@ -209,7 +254,9 @@ public class DBFReader {
      * Parse a field value based on its type
      */
     private Object parseFieldValue(byte[] valueBytes, FieldDescriptor field) {
-        String valueStr = new String(valueBytes, StandardCharsets.US_ASCII).trim();
+        // Use the configured charset for decoding string values
+        // This allows proper handling of Chinese and other non-ASCII characters
+        String valueStr = new String(valueBytes, charset).trim();
 
         // Handle empty values
         if (valueStr.isEmpty()) {

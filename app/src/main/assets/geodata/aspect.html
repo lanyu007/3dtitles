@@ -1,0 +1,13 @@
+Aspects
+
+A GIS raster layer of aspects created from the DEM also provided here. Like the slope layer, it was created by reducing the resolution of the DEM from cells 10 m by 10 m to cells 100 m by 100 m. Slopes and aspects were calculated from this lower resolution image in order to generalize more broadly. The result was then resampled back to a resolution of cells 10 m by 10 m to match the other layers for analysis. The layer is provided in Idrisi (buffer-idrisi.zip) and GeoTIFF (buffer-geotiff.zip) formats. Cell values are as follows:
+
+0=territory outside the survey area
+1=North-facing slopes (337.5°-22.5° azimuth)
+2=Northeast-facing slopes (22.5°-67.5° azimuth)
+3=East-facing slopes (67.5°-112.5° azimuth)
+4=Southeast-facing slopes (112.5°-157.5° azimuth)
+5=South-facing slopes (157.5°-202.5° azimuth)
+6=Southwest-facing slopes (202.5°-247.5° azimuth)
+7=West-facing slopes (247.5°-292.5° azimuth)
+8=Northwest-facing slopes (292.5°-337.5° azimuth)

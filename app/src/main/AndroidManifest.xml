@@ -26,6 +26,15 @@
         android:theme="@style/Theme.MyApplication"
         tools:targetApi="31">
         <activity
+            android:name=".shapeload.MyShapeLoadActivity"
+            android:exported="false" />
+        <activity
+            android:name=".shapeload.LoadShapeActivity"
+            android:exported="false" />
+        <activity
+            android:name=".lasload.LoadLASActivity"
+            android:exported="false" />
+        <activity
             android:name=".geoload.LoadGEOActivity"
             android:exported="false" />
         <activity

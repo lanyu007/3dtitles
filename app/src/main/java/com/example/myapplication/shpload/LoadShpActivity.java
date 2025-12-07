@@ -17,7 +17,6 @@ import com.example.myapplication.exampledemo.worldwindx.experimental.AtmosphereL
 
 import java.io.InputStream;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -30,6 +29,8 @@ import gov.nasa.worldwind.layer.BackgroundLayer;
 import gov.nasa.worldwind.layer.BlueMarbleLandsatLayer;
 import gov.nasa.worldwind.layer.RenderableLayer;
 import gov.nasa.worldwind.render.Color;
+import gov.nasa.worldwind.shape.Placemark;
+import gov.nasa.worldwind.shape.PlacemarkAttributes;
 import gov.nasa.worldwind.shape.Polygon;
 import gov.nasa.worldwind.shape.ShapeAttributes;
 
@@ -57,6 +58,7 @@ public class LoadShpActivity extends AppCompatActivity {
     private static final String DBF_PATH = "data/buildings.dbf";
     private static final String PRJ_PATH = "data/buildings.prj";
     private static final String SHX_PATH = "data/buildings.shx";
+    private static final String CPG_PATH = "shp/cs.cpg";
 
     // WorldWind components
     protected WorldWindow wwd;
@@ -80,6 +82,8 @@ public class LoadShpActivity extends AppCompatActivity {
     // Statistics
     private int totalPolygons = 0;
     private int loadedPolygons = 0;
+    private int totalPoints = 0;
+    private int loadedPoints = 0;
 
     // Building height statistics
     private int buildingsWithHeight = 0;
@@ -133,6 +137,43 @@ public class LoadShpActivity extends AppCompatActivity {
         wwd.getLayers().addLayer(shapefileLayer);
 
         Log.d(TAG, "WorldWindow initialized");
+    }
+
+    /**
+     * Load character encoding from .cpg file
+     * 从 .cpg 文件加载字符编码
+     *
+     * @return The character encoding name (e.g., "UTF-8", "GBK"), or null if not found
+     */
+    private String loadCharacterEncoding() {
+        try {
+            InputStream cpgStream = getAssets().open(CPG_PATH);
+            byte[] buffer = new byte[1024];
+            int bytesRead = cpgStream.read(buffer);
+            cpgStream.close();
+
+            if (bytesRead > 0) {
+                // Read the encoding name and trim whitespace
+                String encoding = new String(buffer, 0, bytesRead, "UTF-8").trim();
+
+                // Handle common encoding aliases
+                if (encoding.equalsIgnoreCase("UTF8")) {
+                    encoding = "UTF-8";
+                } else if (encoding.equalsIgnoreCase("GBK") || encoding.equalsIgnoreCase("GB2312")) {
+                    encoding = "GBK"; // GBK is a superset of GB2312
+                }
+
+                Log.d(TAG, "=== Character Encoding ===");
+                Log.d(TAG, "Encoding from .cpg: " + encoding);
+                return encoding;
+            } else {
+                Log.w(TAG, ".cpg file is empty, using default UTF-8 encoding");
+                return null;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, ".cpg file not found, using default UTF-8 encoding: " + e.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -253,8 +294,13 @@ public class LoadShpActivity extends AppCompatActivity {
         }
         Log.d(TAG, "");
         Log.d(TAG, "Geometry:");
-        Log.d(TAG, "  - Type: Polygon");
-        Log.d(TAG, "  - Records: " + (indexReader != null ? indexReader.getRecordCount() : loadedPolygons));
+        if (loadedPoints > 0) {
+            Log.d(TAG, "  - Type: PointZ");
+            Log.d(TAG, "  - Records: " + loadedPoints);
+        } else {
+            Log.d(TAG, "  - Type: Polygon");
+            Log.d(TAG, "  - Records: " + (indexReader != null ? indexReader.getRecordCount() : loadedPolygons));
+        }
         Log.d(TAG, "  - Bounding Box:");
         if (minLat != Double.MAX_VALUE) {
             Log.d(TAG, "      Lat: [" + String.format("%.6f", minLat) + ", " + String.format("%.6f", maxLat) + "]");
@@ -264,7 +310,11 @@ public class LoadShpActivity extends AppCompatActivity {
         }
         Log.d(TAG, "");
         Log.d(TAG, "Rendering:");
-        Log.d(TAG, "  - Polygons: " + shapefileLayer.count());
+        if (loadedPoints > 0) {
+            Log.d(TAG, "  - Points: " + shapefileLayer.count());
+        } else {
+            Log.d(TAG, "  - Polygons: " + shapefileLayer.count());
+        }
 
         if (minLat != Double.MAX_VALUE) {
             double centerLat = (minLat + maxLat) / 2.0;
@@ -339,8 +389,9 @@ public class LoadShpActivity extends AppCompatActivity {
             DBFReader dbfReader = null;
 
             try {
-                // === Step 0: Load projection and index information ===
+                // === Step 0: Load projection, encoding, and index information ===
                 loadProjectionInfo();
+                String characterEncoding = loadCharacterEncoding();
                 loadShapefileIndex();
 
                 // Step 1: Load and parse .shp file
@@ -349,19 +400,22 @@ public class LoadShpActivity extends AppCompatActivity {
                 shpReader.read(shpStream);
                 shpStream.close();
 
-                totalPolygons = shpReader.getRecordCount();
-                Log.d(TAG, "Shapefile loaded: " + totalPolygons + " polygons");
-                Log.d(TAG, "Shape type: " + shpReader.getShapeType());
+                int shapeType = shpReader.getShapeType();
+                totalPolygons = shpReader.getPolygonRecords().size();
+                totalPoints = shpReader.getPointZRecords().size();
+                Log.d(TAG, "Shapefile loaded: " + totalPolygons + " polygons, " + totalPoints + " points");
+                Log.d(TAG, "Shape type: " + shapeType);
                 double[] bbox = shpReader.getBoundingBox();
                 Log.d(TAG, "Bounding box: [" + bbox[0] + ", " + bbox[1] +
                         ", " + bbox[2] + ", " + bbox[3] + "]");
 
-                // Step 2: Load and parse .dbf file (attributes)
+                // Step 2: Load and parse .dbf file (attributes) with character encoding
                 updateStatus("Reading attributes file (.dbf)...");
                 try {
                     InputStream dbfStream = getAssets().open(DBF_PATH);
                     dbfReader = new DBFReader();
-                    dbfReader.read(dbfStream);
+                    // Pass the character encoding from .cpg file to DBFReader
+//                    dbfReader.read(dbfStream, characterEncoding);
                     dbfStream.close();
                     Log.d(TAG, "DBF loaded: " + dbfReader.getRecordCount() + " records");
                 } catch (Exception e) {
@@ -369,50 +423,94 @@ public class LoadShpActivity extends AppCompatActivity {
                             e.getMessage());
                 }
 
-                // Step 3: Create polygon renderables
-                updateStatus("Creating polygon objects (0/" + totalPolygons + ")...");
+                // Step 3: Create renderables based on shape type
+                // Check if shapefile contains PointZ or Polygon data
+                List<ShapefileReader.PointZRecord> points = shpReader.getPointZRecords();
                 List<ShapefileReader.PolygonRecord> polygons = shpReader.getPolygonRecords();
                 final DBFReader finalDbfReader = dbfReader;
 
-                // Process polygons in batches for better performance
-                int batchSize = 50;
-                for (int i = 0; i < polygons.size(); i += batchSize) {
-                    int endIndex = Math.min(i + batchSize, polygons.size());
-                    List<Polygon> batchPolygons = new ArrayList<>();
+                // Process PointZ data if available
+                if (!points.isEmpty()) {
+                    updateStatus("Creating point markers (0/" + totalPoints + ")...");
+                    int batchSize = 100;
+                    for (int i = 0; i < points.size(); i += batchSize) {
+                        int endIndex = Math.min(i + batchSize, points.size());
+                        List<Placemark> batchPlacemarks = new ArrayList<>();
 
-                    // Create batch of polygons
-                    for (int j = i; j < endIndex; j++) {
-                        ShapefileReader.PolygonRecord record = polygons.get(j);
+                        // Create batch of placemarks
+                        for (int j = i; j < endIndex; j++) {
+                            ShapefileReader.PointZRecord point = points.get(j);
 
-                        // Get attributes if available
-                        Map<String, Object> attributes = null;
-                        if (finalDbfReader != null && j < finalDbfReader.getRecordCount()) {
-                            attributes = finalDbfReader.getRecord(j);
-                        }
+                            // Get attributes if available
+                            Map<String, Object> attributes = null;
+                            if (finalDbfReader != null && j < finalDbfReader.getRecordCount()) {
+                                attributes = finalDbfReader.getRecord(j);
+                            }
 
-                        // Create polygon with first part (outer ring)
-                        // Note: Additional parts would be holes, which can be handled separately
-                        if (!record.parts.isEmpty()) {
-                            List<Polygon> buildingPolygons = createBuilding3D(record, attributes);
-                            if (!buildingPolygons.isEmpty()) {
-                                batchPolygons.addAll(buildingPolygons);
-                                loadedPolygons++;
+                            // Create placemark for point
+                            Placemark placemark = createPointPlacemark(point, attributes);
+                            if (placemark != null) {
+                                batchPlacemarks.add(placemark);
+                                loadedPoints++;
                             }
                         }
+
+                        // Add batch to layer on main thread
+                        final int currentCount = loadedPoints;
+                        mainHandler.post(() -> {
+                            for (Placemark placemark : batchPlacemarks) {
+                                shapefileLayer.addRenderable(placemark);
+                            }
+                            updateStatus("Loading points (" + currentCount + "/" + totalPoints + ")...");
+                            wwd.requestRedraw();
+                        });
+
+                        // Brief pause to allow UI updates
+                        Thread.sleep(10);
                     }
+                }
+                // Process Polygon data if available
+                else if (!polygons.isEmpty()) {
+                    updateStatus("Creating polygon objects (0/" + totalPolygons + ")...");
+                    int batchSize = 50;
+                    for (int i = 0; i < polygons.size(); i += batchSize) {
+                        int endIndex = Math.min(i + batchSize, polygons.size());
+                        List<Polygon> batchPolygons = new ArrayList<>();
 
-                    // Add batch to layer on main thread
-                    final int currentCount = loadedPolygons;
-                    mainHandler.post(() -> {
-                        for (Polygon polygon : batchPolygons) {
-                            shapefileLayer.addRenderable(polygon);
+                        // Create batch of polygons
+                        for (int j = i; j < endIndex; j++) {
+                            ShapefileReader.PolygonRecord record = polygons.get(j);
+
+                            // Get attributes if available
+                            Map<String, Object> attributes = null;
+                            if (finalDbfReader != null && j < finalDbfReader.getRecordCount()) {
+                                attributes = finalDbfReader.getRecord(j);
+                            }
+
+                            // Create polygon with first part (outer ring)
+                            // Note: Additional parts would be holes, which can be handled separately
+                            if (!record.parts.isEmpty()) {
+                                List<Polygon> buildingPolygons = createBuilding3D(record, attributes);
+                                if (!buildingPolygons.isEmpty()) {
+                                    batchPolygons.addAll(buildingPolygons);
+                                    loadedPolygons++;
+                                }
+                            }
                         }
-                        updateStatus("Loading polygons (" + currentCount + "/" + totalPolygons + ")...");
-                        wwd.requestRedraw();
-                    });
 
-                    // Brief pause to allow UI updates
-                    Thread.sleep(10);
+                        // Add batch to layer on main thread
+                        final int currentCount = loadedPolygons;
+                        mainHandler.post(() -> {
+                            for (Polygon polygon : batchPolygons) {
+                                shapefileLayer.addRenderable(polygon);
+                            }
+                            updateStatus("Loading polygons (" + currentCount + "/" + totalPolygons + ")...");
+                            wwd.requestRedraw();
+                        });
+
+                        // Brief pause to allow UI updates
+                        Thread.sleep(10);
+                    }
                 }
 
                 // Step 4: Validate coordinates
@@ -431,7 +529,17 @@ public class LoadShpActivity extends AppCompatActivity {
                     positionCamera();
                     updateProjectionDisplay();  // 确保投影信息显示 / Ensure projection info is displayed
                     logShapefileMetadata();
-                    updateStatus("Shapefile loaded: " + loadedPolygons + " buildings");
+
+                    // Update status based on what was loaded
+                    String statusMsg;
+                    if (loadedPoints > 0) {
+                        statusMsg = "Shapefile loaded: " + loadedPoints + " points";
+                    } else if (loadedPolygons > 0) {
+                        statusMsg = "Shapefile loaded: " + loadedPolygons + " buildings";
+                    } else {
+                        statusMsg = "Shapefile loaded (no features)";
+                    }
+                    updateStatus(statusMsg);
                     wwd.requestRedraw();
 
                     Log.d(TAG, "Shapefile loading complete");
@@ -556,6 +664,70 @@ public class LoadShpActivity extends AppCompatActivity {
     }
 
     /**
+     * Create a Placemark from a PointZ record
+     * Creates a visual marker for point data with appropriate styling
+     *
+     * @param point PointZ record containing coordinates and Z value
+     * @param attributes Optional attribute data from DBF file
+     * @return Placemark renderable, or null if creation fails
+     */
+    private Placemark createPointPlacemark(ShapefileReader.PointZRecord point,
+                                           Map<String, Object> attributes) {
+        try {
+            // Create position with Z value as altitude
+            Position position = Position.fromDegrees(point.y, point.x, point.z);
+
+            // Update bounding box
+            updateBoundingBox(point.y, point.x);
+
+            // Create placemark attributes for visual styling
+            PlacemarkAttributes attrs = new PlacemarkAttributes();
+
+            // Set color based on Z value (height/elevation)
+            Color color = getColorByHeight(point.z);
+            attrs.setImageColor(color);
+
+            // Set marker size based on Z value (taller points = larger markers)
+            double markerSize = Math.max(8, Math.min(point.z / 5.0, 24)); // Size between 8-24 pixels
+            attrs.setImageScale(markerSize / 16.0); // Default size is 16
+
+            // Set image source (use simple shape)
+            attrs.setImageSource(gov.nasa.worldwind.render.ImageSource.fromResource(
+                    android.R.drawable.ic_menu_mylocation));
+
+            // Create the placemark
+            Placemark placemark = new Placemark(position, attrs);
+
+            // Set altitude mode to show at correct elevation
+            placemark.setAltitudeMode(gov.nasa.worldwind.WorldWind.RELATIVE_TO_GROUND);
+
+            // Set display name from attributes if available
+            if (attributes != null) {
+                String name = getDisplayName(attributes);
+                if (name != null) {
+                    placemark.setDisplayName(name);
+                } else {
+                    // Default name with coordinates and elevation
+                    placemark.setDisplayName(String.format("Point (%.6f, %.6f) Z=%.2fm",
+                            point.y, point.x, point.z));
+                }
+            } else {
+                placemark.setDisplayName(String.format("Point (%.6f, %.6f) Z=%.2fm",
+                        point.y, point.x, point.z));
+            }
+
+            Log.d(TAG, "Created placemark at (" + String.format("%.6f", point.y) + ", " +
+                    String.format("%.6f", point.x) + ") Z=" + point.z);
+
+            return placemark;
+
+        } catch (Exception e) {
+            Log.w(TAG, "Error creating placemark: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * Create a 3D building from a Shapefile polygon record
      * Creates bottom, top, and side polygons to form a pseudo-3D building effect
      *
@@ -593,127 +765,168 @@ public class LoadShpActivity extends AppCompatActivity {
             // Get base color for this building based on height
             Color baseColor = getColorByHeight(buildingHeight);
 
-            // === 1. Create bottom polygon (height = 0) ===
-            List<Position> basePositions = new ArrayList<>();
-            for (ShapefileReader.Point point : ring) {
-                basePositions.add(Position.fromDegrees(point.y, point.x, 0));
-            }
-
-            // Ensure closed
-            if (basePositions.size() > 0) {
-                Position first = basePositions.get(0);
-                Position last = basePositions.get(basePositions.size() - 1);
-                if (first.latitude != last.latitude || first.longitude != last.longitude) {
-                    basePositions.add(first);
-                }
-            }
-
-            // Bottom polygon attributes - darker color, semi-transparent
-            ShapeAttributes bottomAttrs = new ShapeAttributes();
-            Color bottomColor = new Color(
-                baseColor.red * 0.5f,
-                baseColor.green * 0.5f,
-                baseColor.blue * 0.5f,
-                0.3f
-            );
-            bottomAttrs.setInteriorColor(bottomColor);
-            bottomAttrs.setOutlineColor(new Color(0.3f, 0.3f, 0.3f, 0.5f));
-            bottomAttrs.setOutlineWidth(1f);
-            bottomAttrs.setDrawInterior(true);
-            bottomAttrs.setDrawOutline(true);
-
-            Polygon bottomPolygon = new Polygon(basePositions, bottomAttrs);
-            bottomPolygon.setAltitudeMode(gov.nasa.worldwind.WorldWind.RELATIVE_TO_GROUND);
-            bottomPolygon.setFollowTerrain(false);
-            buildingPolygons.add(bottomPolygon);
-
-            // === 2. Create top polygon (height = buildingHeight) ===
-            List<Position> topPositions = new ArrayList<>();
-            for (ShapefileReader.Point point : ring) {
-                topPositions.add(Position.fromDegrees(point.y, point.x, buildingHeight));
-            }
-
-            // Ensure closed
-            if (topPositions.size() > 0) {
-                Position first = topPositions.get(0);
-                Position last = topPositions.get(topPositions.size() - 1);
-                if (first.latitude != last.latitude || first.longitude != last.longitude) {
-                    topPositions.add(first);
-                }
-            }
-
-            // Reverse order for correct normal direction (outward facing)
-            Collections.reverse(topPositions);
-
-            // Top polygon attributes - full color
-            ShapeAttributes topAttrs = new ShapeAttributes();
-            topAttrs.setInteriorColor(baseColor);
-            topAttrs.setOutlineColor(new Color(
-                baseColor.red * 0.7f,
-                baseColor.green * 0.7f,
-                baseColor.blue * 0.7f,
-                1.0f
-            ));
-            topAttrs.setOutlineWidth(2f);
-            topAttrs.setDrawInterior(true);
-            topAttrs.setDrawOutline(true);
-
-            Polygon topPolygon = new Polygon(topPositions, topAttrs);
-            topPolygon.setAltitudeMode(gov.nasa.worldwind.WorldWind.RELATIVE_TO_GROUND);
-            topPolygon.setFollowTerrain(false);
-            buildingPolygons.add(topPolygon);
-
-            // === 3. Create side polygons (connecting bottom and top) ===
-            Color sideColor = new Color(
-                baseColor.red * 0.6f,
-                baseColor.green * 0.6f,
-                baseColor.blue * 0.6f,
-                0.7f
-            );
-
-            // Get positions without the closing point for side generation
+            // === Step 1: Create shared Position lists (baseRing and topRing) ===
+            // These will be shared by all polygons to ensure proper vertex fusion
             List<Position> baseRing = new ArrayList<>();
-            List<Position> topRing = new ArrayList<>();
             for (ShapefileReader.Point point : ring) {
                 baseRing.add(Position.fromDegrees(point.y, point.x, 0));
+            }
+
+            List<Position> topRing = new ArrayList<>();
+            for (ShapefileReader.Point point : ring) {
                 topRing.add(Position.fromDegrees(point.y, point.x, buildingHeight));
             }
 
-            // Reverse top ring to match bottom orientation
-            Collections.reverse(topRing);
+            // Ensure both rings are closed (add first point at end if needed)
+            if (baseRing.size() > 0) {
+                Position first = baseRing.get(0);
+                Position last = baseRing.get(baseRing.size() - 1);
+                if (first.latitude != last.latitude || first.longitude != last.longitude) {
+                    baseRing.add(first);
+                    topRing.add(topRing.get(0));  // Close top ring as well
+                }
+            }
 
-            // Create a side polygon for each edge
+            // === Step 2: Create bottom polygon (directly using baseRing) ===
+            if (baseRing.size() >= 3) {
+                ShapeAttributes bottomAttrs = new ShapeAttributes();
+                Color bottomColor = new Color(
+                    baseColor.red * 0.5f,
+                    baseColor.green * 0.5f,
+                    baseColor.blue * 0.5f,
+                    0.3f
+                );
+                bottomAttrs.setInteriorColor(bottomColor);
+                bottomAttrs.setOutlineColor(new Color(0.3f, 0.3f, 0.3f, 0.5f));
+                bottomAttrs.setOutlineWidth(1f);
+                bottomAttrs.setDrawInterior(true);
+                bottomAttrs.setDrawOutline(true);
+
+                Polygon bottomPolygon = new Polygon(baseRing, bottomAttrs);
+                bottomPolygon.setAltitudeMode(gov.nasa.worldwind.WorldWind.RELATIVE_TO_GROUND);
+                bottomPolygon.setFollowTerrain(false);
+                buildingPolygons.add(bottomPolygon);
+            }
+
+            // === Step 3: Create top polygon (using original topRing) ===
+            if (topRing.size() >= 3) {
+                ShapeAttributes topAttrs = new ShapeAttributes();
+                topAttrs.setInteriorColor(baseColor);
+                topAttrs.setOutlineColor(new Color(
+                    baseColor.red * 0.7f,
+                    baseColor.green * 0.7f,
+                    baseColor.blue * 0.7f,
+                    1.0f
+                ));
+                topAttrs.setOutlineWidth(2f);
+                topAttrs.setDrawInterior(true);
+                topAttrs.setDrawOutline(true);
+
+                // Directly use original topRing, no reversal needed
+                Polygon topPolygon = new Polygon(topRing, topAttrs);
+                topPolygon.setAltitudeMode(gov.nasa.worldwind.WorldWind.RELATIVE_TO_GROUND);
+                topPolygon.setFollowTerrain(false);
+                buildingPolygons.add(topPolygon);
+            }
+
+            // === Step 4: Create individual side face polygons (similar to top face) ===
+            // Each edge gets its own complete rectangular face polygon
+            Color sideColor = new Color(
+                baseColor.red * 0.65f,
+                baseColor.green * 0.65f,
+                baseColor.blue * 0.65f,
+                0.9f  // High opacity for solid appearance
+            );
+
+            // Create one complete rectangular face for each edge of the building
             for (int i = 0; i < baseRing.size() - 1; i++) {
-                List<Position> sidePositions = new ArrayList<>();
+                // Get the 4 corners of this rectangular side face
+                Position bottomLeft = baseRing.get(i);
+                Position bottomRight = baseRing.get(i + 1);
+                Position topLeft = topRing.get(i);
+                Position topRight = topRing.get(i + 1);
 
-                // Create trapezoid: basePt1 -> basePt2 -> topPt2 -> topPt1 -> basePt1 (closed)
-                Position basePt1 = baseRing.get(i);
-                Position basePt2 = baseRing.get(i + 1);
-                Position topPt1 = topRing.get(topRing.size() - 1 - i);
-                Position topPt2 = topRing.get(topRing.size() - 2 - i);
+                // Create a complete rectangular face (similar to how top face is created)
+                // Vertices in order: bottom-left -> bottom-right -> top-right -> top-left -> close
+                List<Position> sideFacePositions = new ArrayList<>();
+                sideFacePositions.add(bottomLeft);
+                sideFacePositions.add(bottomRight);
+                sideFacePositions.add(topRight);
+                sideFacePositions.add(topLeft);
+                sideFacePositions.add(bottomLeft);  // Close the polygon
 
-                sidePositions.add(basePt1);
-                sidePositions.add(basePt2);
-                sidePositions.add(topPt2);
-                sidePositions.add(topPt1);
-                sidePositions.add(basePt1); // Close the polygon
-
-                ShapeAttributes sideAttrs = new ShapeAttributes();
-                sideAttrs.setInteriorColor(sideColor);
-                sideAttrs.setOutlineColor(new Color(
+                // Create attributes for this side face (similar to top face)
+                ShapeAttributes sideFaceAttrs = new ShapeAttributes();
+                sideFaceAttrs.setInteriorColor(sideColor);
+                sideFaceAttrs.setOutlineColor(new Color(
                     sideColor.red * 0.8f,
                     sideColor.green * 0.8f,
                     sideColor.blue * 0.8f,
-                    0.8f
+                    0.4f  // Subtle outline
                 ));
-                sideAttrs.setOutlineWidth(1f);
-                sideAttrs.setDrawInterior(true);
-                sideAttrs.setDrawOutline(true);
+                sideFaceAttrs.setOutlineWidth(0.5f);  // Very thin outline
+                sideFaceAttrs.setDrawInterior(true);   // Draw the face interior
+                sideFaceAttrs.setDrawOutline(true);    // Draw subtle outline
 
-                Polygon sidePolygon = new Polygon(sidePositions, sideAttrs);
-                sidePolygon.setAltitudeMode(gov.nasa.worldwind.WorldWind.RELATIVE_TO_GROUND);
-                sidePolygon.setFollowTerrain(false);
-                buildingPolygons.add(sidePolygon);
+                // Create the side face polygon (complete rectangular plane)
+                Polygon sideFacePolygon = new Polygon(sideFacePositions, sideFaceAttrs);
+                sideFacePolygon.setAltitudeMode(gov.nasa.worldwind.WorldWind.RELATIVE_TO_GROUND);
+                sideFacePolygon.setFollowTerrain(false);
+                buildingPolygons.add(sideFacePolygon);
+            }
+
+            Log.d(TAG, "Created " + (baseRing.size() - 1) + " complete side face polygons");
+
+            // === Step 5: Fill building interior with horizontal slices ===
+            // Create multiple horizontal layers inside the building to simulate solid volume
+            if (buildingHeight > 0 && baseRing.size() >= 3) {
+                // Determine number of interior layers based on building height
+                // More layers for taller buildings to ensure solid appearance
+                int numInteriorLayers = Math.max(1, (int)(buildingHeight / 10.0));  // 1 layer per 10 meters
+                numInteriorLayers = Math.min(numInteriorLayers, 10);  // Cap at 10 layers for performance
+
+                // Create interior color (slightly more opaque than sides)
+                Color interiorColor = new Color(
+                    baseColor.red * 0.7f,
+                    baseColor.green * 0.7f,
+                    baseColor.blue * 0.7f,
+                    0.85f  // High opacity for solid interior
+                );
+
+                ShapeAttributes interiorAttrs = new ShapeAttributes();
+                interiorAttrs.setInteriorColor(interiorColor);
+                interiorAttrs.setOutlineColor(new Color(0, 0, 0, 1));  // No outline for interior layers
+                interiorAttrs.setOutlineWidth(0f);
+                interiorAttrs.setDrawInterior(true);
+                interiorAttrs.setDrawOutline(false);
+
+                // Create evenly-spaced horizontal slices inside the building
+                for (int layer = 1; layer <= numInteriorLayers; layer++) {
+                    double layerHeight = (buildingHeight * layer) / (numInteriorLayers + 1);
+
+                    // Create a horizontal slice at this height
+                    List<Position> slicePositions = new ArrayList<>();
+                    for (ShapefileReader.Point point : ring) {
+                        slicePositions.add(Position.fromDegrees(point.y, point.x, layerHeight));
+                    }
+
+                    // Close the slice if needed
+                    if (slicePositions.size() > 0) {
+                        Position first = slicePositions.get(0);
+                        Position last = slicePositions.get(slicePositions.size() - 1);
+                        if (first.latitude != last.latitude || first.longitude != last.longitude) {
+                            slicePositions.add(first);
+                        }
+                    }
+
+                    // Create interior slice polygon
+                    Polygon slicePolygon = new Polygon(slicePositions, interiorAttrs);
+                    slicePolygon.setAltitudeMode(gov.nasa.worldwind.WorldWind.RELATIVE_TO_GROUND);
+                    slicePolygon.setFollowTerrain(false);
+                    buildingPolygons.add(slicePolygon);
+                }
+
+                Log.d(TAG, "Created " + numInteriorLayers + " interior layers to fill building volume");
             }
 
             // Set display name from attributes if available
