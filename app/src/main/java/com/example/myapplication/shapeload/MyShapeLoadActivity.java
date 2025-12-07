@@ -65,7 +65,7 @@ public class MyShapeLoadActivity extends AppCompatActivity {
     private static final String CPG_PATH = "shp/cs.cpg";
 
     // 性能批处理配置
-    private static final int BATCH_SIZE = 1000;  // 每批处理1000个建筑物
+    private static final int BATCH_SIZE = 100;  // 每批处理100个建筑物（降低以减少内存峰值）
     private static final int PROGRESS_UPDATE_INTERVAL = 100;  // 每100个建筑物更新一次
 
     // WorldWind组件
@@ -231,150 +231,158 @@ public class MyShapeLoadActivity extends AppCompatActivity {
     }
 
     /**
-     * 基于点密度和地理边界计算最优网格大小
+     * 将Web Mercator坐标转换为WGS84坐标
      *
-     * 策略:
-     * - 高密度(>500k个点): 更细网格(0.00003°约3.3米)
-     * - 中密度(100k-500k): 中等网格(0.00005°约5.5米)
-     * - 低密度(<100k): 较粗网格(0.0001°约11米)
+     * @param x Web Mercator X坐标（米）
+     * @param y Web Mercator Y坐标（米）
+     * @return double[] {经度, 纬度}（度）
+     */
+    private double[] convertWebMercatorToWGS84(double x, double y) {
+        // Web Mercator常量
+        final double EARTH_RADIUS = 6378137.0;  // WGS84椭球体半径（米）
+        final double ORIGIN_SHIFT = Math.PI * EARTH_RADIUS;  // 20037508.342789244
+
+        // X坐标转换为经度
+        double lon = (x / ORIGIN_SHIFT) * 180.0;
+
+        // Y坐标转换为纬度
+        double lat = (y / ORIGIN_SHIFT) * 180.0;
+        lat = 180.0 / Math.PI * (2.0 * Math.atan(Math.exp(lat * Math.PI / 180.0)) - Math.PI / 2.0);
+
+        return new double[]{lon, lat};
+    }
+
+    /**
+     * 基于点密度和地理边界计算最优网格大小（优化版 - 修复网格溢出问题）
      *
-     * 还考虑地理边界以确保合理的网格数量
-     *
-     * 已修复: 整数溢出问题 - 现在使用long进行网格计数计算
+     * 新策略:
+     * 1. 使用相对坐标系统，避免大坐标值导致的网格索引溢出
+     * 2. 基于实际地理范围动态计算网格大小
+     * 3. 确保网格数量在合理范围内（1000-100000）
+     * 4. 优先保证大建筑物的显示
      *
      * @param pointCount 数据集中的总点数
-     * @param bbox 边界框[minX, minY, maxX, maxY]
+     * @param bbox 边界框[minX, minY, maxX, maxY]（必须是WGS84度数）
      * @return 最优网格大小(度)
      */
     private double calculateOptimalGridSize(int pointCount, double[] bbox) {
-        // 网格数量约束，防止溢出并确保合理性能
-        final long MAX_GRIDS = 500000;  // 最大500k个网格(对于100万个点约710点/网格)
-        final long MIN_GRIDS = 1000;    // 最小1000个网格以保证合理细节
+        // 网格数量约束 - 调整为更保守的值以避免内存溢出
+        final int TARGET_GRIDS = 1000;   // 目标网格数：1万个网格（从5万降低）
+        final int MAX_GRIDS = 30000;      // 最大3万个网格（从10万降低）
+        final int MIN_GRIDS = 1000;       // 最小1000个网格
 
         // 计算地理区域
         double latRange = bbox[3] - bbox[1];
         double lonRange = bbox[2] - bbox[0];
         double area = latRange * lonRange;  // 平方度
 
-        // 计算点密度(点数/平方度)
-        double density = pointCount / area;
-
-        Log.d(TAG, "=== 网格大小计算 ===");
+        Log.d(TAG, "=== 网格大小计算（优化版） ===");
         Log.d(TAG, "总点数: " + pointCount);
         Log.d(TAG, "地理区域: " + String.format("%.6f", area) + " 平方度");
         Log.d(TAG, "纬度范围: " + String.format("%.6f", latRange) + "° (约" +
                    String.format("%.1f", latRange * 111000) + " 米)");
         Log.d(TAG, "经度范围: " + String.format("%.6f", lonRange) + "° (约" +
                    String.format("%.1f", lonRange * 111000) + " 米)");
-        Log.d(TAG, "点密度: " + String.format("%.0f", density) + " 点/平方度");
 
-        double gridSize;
+        // 方法1: 基于目标网格数直接计算
+        // gridSize = sqrt(area / targetGrids)
+        double gridSizeFromTarget = Math.sqrt(area / TARGET_GRIDS);
 
-        // 根据点数和密度确定初始网格大小
-        if (pointCount > 500000) {
-            // 非常高密度: 使用更细网格(3-5米)
-            gridSize = 0.00003;  // 约3.3米
-            Log.d(TAG, "检测到高密度: 使用细网格(0.00003° 约3.3米)");
-        } else if (pointCount > 100000) {
-            // 中高密度: 使用中细网格(5-7米)
-            gridSize = 0.00005;  // 约5.5米
-            Log.d(TAG, "检测到中高密度: 使用中细网格(0.00005° 约5.5米)");
-        } else if (pointCount > 50000) {
-            // 中等密度: 使用中等网格(7-11米)
-            gridSize = 0.00007;  // 约7.7米
-            Log.d(TAG, "检测到中等密度: 使用中等网格(0.00007° 约7.7米)");
-        } else {
-            // 较低密度: 使用默认网格(11米)
-            gridSize = 0.0001;  // 约11米
-            Log.d(TAG, "检测到较低密度: 使用默认网格(0.0001° 约11米)");
-        }
+        // 方法2: 基于点密度计算 - 确保每个网格至少有10-20个点
+        double targetPointsPerGrid = Math.max(10, Math.min(50, pointCount / TARGET_GRIDS));
+        double gridSizeFromDensity = Math.sqrt(area * targetPointsPerGrid / pointCount);
 
-        // 已修复: 使用long防止整数溢出
-        // 分别计算每个维度的网格数以避免溢出
-        long latGrids = (long) Math.ceil(latRange / gridSize);
-        long lonGrids = (long) Math.ceil(lonRange / gridSize);
+        // 取两种方法的平均值
+        double gridSize = (gridSizeFromTarget + gridSizeFromDensity) / 2.0;
 
-        // 在乘法之前检查潜在溢出
-        if (latGrids > 0 && lonGrids > Long.MAX_VALUE / latGrids) {
-            Log.e(TAG, "错误: 网格计算将溢出! latGrids=" + latGrids +
-                       ", lonGrids=" + lonGrids);
-            // 使用非常大的网格大小作为后备
-            gridSize = Math.sqrt(area / MAX_GRIDS);
-            latGrids = (long) Math.ceil(latRange / gridSize);
-            lonGrids = (long) Math.ceil(lonRange / gridSize);
-        }
+        Log.d(TAG, "方法1(基于目标网格数): " + String.format("%.8f", gridSizeFromTarget) + "°");
+        Log.d(TAG, "方法2(基于点密度): " + String.format("%.8f", gridSizeFromDensity) + "°");
+        Log.d(TAG, "初始网格大小: " + String.format("%.8f", gridSize) + "° (约" +
+                   String.format("%.1f", gridSize * 111000) + "米)");
 
-        long estimatedGrids = latGrids * lonGrids;
+        // 确保网格大小在合理范围内
+        double minGridSize = 0.00001;  // 最小约1.1米
+        double maxGridSize = latRange / 10;  // 最大为区域的1/10（至少10个网格）
 
-        Log.d(TAG, "初始网格估算:");
-        Log.d(TAG, "  网格大小: " + String.format("%.6f", gridSize) + "°");
+        gridSize = Math.max(minGridSize, Math.min(maxGridSize, gridSize));
+
+        Log.d(TAG, "限制后网格大小: " + String.format("%.8f", gridSize) + "° (约" +
+                   String.format("%.1f", gridSize * 111000) + "米)");
+
+        // 验证计算结果
+        int latGrids = (int) Math.ceil(latRange / gridSize);
+        int lonGrids = (int) Math.ceil(lonRange / gridSize);
+        long estimatedGrids = (long) latGrids * lonGrids;
+
+        Log.d(TAG, "验证网格配置:");
         Log.d(TAG, "  纬度网格数: " + latGrids);
         Log.d(TAG, "  经度网格数: " + lonGrids);
         Log.d(TAG, "  估计总网格数: " + estimatedGrids);
-        Log.d(TAG, "  每网格点数: " + (estimatedGrids > 0 ? (pointCount / estimatedGrids) : 0));
+        Log.d(TAG, "  每网格点数(平均): " + (estimatedGrids > 0 ? (pointCount / estimatedGrids) : 0));
 
-        // 迭代调整: 如果网格数太多，增加网格大小
-        int adjustmentIterations = 0;
-        while (estimatedGrids > MAX_GRIDS && adjustmentIterations < 10) {
-            adjustmentIterations++;
-            // 通过系数增加网格大小以减少网格数
-            double adjustmentFactor = Math.sqrt((double) estimatedGrids / MAX_GRIDS);
-            gridSize *= adjustmentFactor;
-
-            latGrids = (long) Math.ceil(latRange / gridSize);
-            lonGrids = (long) Math.ceil(lonRange / gridSize);
-            estimatedGrids = latGrids * lonGrids;
-
-            Log.d(TAG, "调整迭代 " + adjustmentIterations + " (网格太多):");
-            Log.d(TAG, "  新网格大小: " + String.format("%.6f", gridSize) + "° (约" +
-                       String.format("%.1f", gridSize * 111000) + "米)");
-            Log.d(TAG, "  估计网格数: " + estimatedGrids);
-            Log.d(TAG, "  每网格点数: " + (pointCount / estimatedGrids));
+        // 如果网格数仍然超出范围，进行调整
+        if (estimatedGrids > MAX_GRIDS) {
+            Log.w(TAG, "⚠️ 网格数超过最大值，调整中...");
+            gridSize = Math.sqrt(area / MAX_GRIDS);
+            latGrids = (int) Math.ceil(latRange / gridSize);
+            lonGrids = (int) Math.ceil(lonRange / gridSize);
+            estimatedGrids = (long) latGrids * lonGrids;
+            Log.d(TAG, "调整后: 网格大小=" + String.format("%.8f", gridSize) +
+                      "°, 网格数=" + estimatedGrids);
+        } else if (estimatedGrids < MIN_GRIDS && pointCount > 10000) {
+            Log.w(TAG, "⚠️ 网格数低于最小值，调整中...");
+            gridSize = Math.sqrt(area / MIN_GRIDS);
+            latGrids = (int) Math.ceil(latRange / gridSize);
+            lonGrids = (int) Math.ceil(lonRange / gridSize);
+            estimatedGrids = (long) latGrids * lonGrids;
+            Log.d(TAG, "调整后: 网格大小=" + String.format("%.8f", gridSize) +
+                      "°, 网格数=" + estimatedGrids);
         }
-
-        // 迭代调整: 如果网格数太少，减小网格大小
-        adjustmentIterations = 0;
-        while (estimatedGrids < MIN_GRIDS && pointCount > 10000 && adjustmentIterations < 10) {
-            adjustmentIterations++;
-            // 通过系数减小网格大小以增加网格数
-            double adjustmentFactor = Math.sqrt((double) MIN_GRIDS / estimatedGrids);
-            gridSize /= adjustmentFactor;
-
-            // 不要让网格大小太小
-            if (gridSize < 0.00001) {  // 最小约1.1米
-                Log.d(TAG, "网格大小达到最小阈值(0.00001°)，停止调整");
-                gridSize = 0.00001;
-                break;
-            }
-
-            latGrids = (long) Math.ceil(latRange / gridSize);
-            lonGrids = (long) Math.ceil(lonRange / gridSize);
-            estimatedGrids = latGrids * lonGrids;
-
-            Log.d(TAG, "调整迭代 " + adjustmentIterations + " (网格太少):");
-            Log.d(TAG, "  新网格大小: " + String.format("%.6f", gridSize) + "° (约" +
-                       String.format("%.1f", gridSize * 111000) + "米)");
-            Log.d(TAG, "  估计网格数: " + estimatedGrids);
-            Log.d(TAG, "  每网格点数: " + (pointCount / estimatedGrids));
-        }
-
-        // 最终计算和日志记录
-        latGrids = (long) Math.ceil(latRange / gridSize);
-        lonGrids = (long) Math.ceil(lonRange / gridSize);
-        estimatedGrids = latGrids * lonGrids;
 
         Log.d(TAG, "=== 最终网格配置 ===");
-        Log.d(TAG, "网格大小: " + String.format("%.6f", gridSize) + "° (约" +
+        Log.d(TAG, "网格大小: " + String.format("%.8f", gridSize) + "° (约" +
                    String.format("%.1f", gridSize * 111000) + "米)");
         Log.d(TAG, "纬度网格数: " + latGrids);
         Log.d(TAG, "经度网格数: " + lonGrids);
-        Log.d(TAG, "总估计网格数: " + estimatedGrids);
+        Log.d(TAG, "总网格数: " + estimatedGrids);
         Log.d(TAG, "每网格点数(平均): " + (estimatedGrids > 0 ? (pointCount / estimatedGrids) : 0));
         Log.d(TAG, "网格覆盖范围: " + String.format("%.1f", gridSize * 111000) + "米 × " +
                    String.format("%.1f", gridSize * 111000) + "米");
-        Log.d(TAG, "================================");
+        Log.d(TAG, "=======================");
 
         return gridSize;
+    }
+
+    /**
+     * 应用基于高度的LOD（Level of Detail）过滤
+     * 优先保留高建筑物，根据高度阈值过滤小建筑物
+     *
+     * 策略:
+     * 1. 如果网格数 <= 最大限制，保留所有网格
+     * 2. 如果网格数 > 最大限制，应用高度阈值过滤
+     * 3. 高度阈值动态计算，确保大建筑物优先保留
+     *
+     * @param sortedCells 已按高度降序排序的网格列表
+     * @param maxGrids 最大允许渲染的网格数
+     * @return 过滤后的网格列表
+     */
+    private List<GridCell> applyHeightBasedLOD(List<GridCell> sortedCells, int maxGrids) {
+        if (sortedCells.size() <= maxGrids) {
+            Log.d(TAG, "网格数在限制内，保留所有网格");
+            return sortedCells;
+        }
+
+        Log.d(TAG, "应用LOD过滤: " + sortedCells.size() + " -> " + maxGrids);
+
+        // 策略1: 直接取前N个最高的网格
+        List<GridCell> filtered = new ArrayList<>(sortedCells.subList(0, maxGrids));
+
+        // 策略2: 计算高度阈值
+        double heightThreshold = sortedCells.get(maxGrids).calculatedHeight;
+        Log.d(TAG, "高度阈值: " + String.format("%.2f", heightThreshold) + "米");
+        Log.d(TAG, "保留所有高于" + String.format("%.2f", heightThreshold) + "米的建筑物");
+
+        return filtered;
     }
 
     /**
@@ -480,7 +488,56 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                     this.globalMinZ = globalMinZ;
                     this.globalMaxZ = globalMaxZ;
 
-                    // Step 3: 计算最优网格大小
+                    // Step 3: Bbox单位检测和转换
+                    Log.d(TAG, "=== Bbox单位检测与转换 ===");
+                    Log.d(TAG, "原始bbox: [" + bbox[0] + ", " + bbox[1] + ", " + bbox[2] + ", " + bbox[3] + "]");
+
+                    // 检测bbox是否为Web Mercator米数（值的绝对值>360表示不是WGS84度数）
+                    boolean isWebMercator = Math.abs(bbox[0]) > 360 || Math.abs(bbox[1]) > 360 ||
+                                           Math.abs(bbox[2]) > 360 || Math.abs(bbox[3]) > 360;
+
+                    if (isWebMercator) {
+                        Log.d(TAG, "检测到单位类型: Web Mercator（米）");
+                        Log.d(TAG, "bbox值范围超出WGS84度数范围[-180,180]x[-90,90]，需要转换");
+
+                        // 转换bbox的4个值为WGS84度数
+                        double[] minPoint = convertWebMercatorToWGS84(bbox[0], bbox[1]);
+                        double[] maxPoint = convertWebMercatorToWGS84(bbox[2], bbox[3]);
+
+                        double[] convertedBbox = new double[]{
+                            minPoint[0],  // minLon
+                            minPoint[1],  // minLat
+                            maxPoint[0],  // maxLon
+                            maxPoint[1]   // maxLat
+                        };
+
+                        Log.d(TAG, "转换后bbox: [" + convertedBbox[0] + ", " + convertedBbox[1] + ", " +
+                                   convertedBbox[2] + ", " + convertedBbox[3] + "]");
+                        Log.d(TAG, "转换详情:");
+                        Log.d(TAG, "  最小点: (" + bbox[0] + "m, " + bbox[1] + "m) -> (" +
+                                   String.format("%.6f", minPoint[0]) + "°, " +
+                                   String.format("%.6f", minPoint[1]) + "°)");
+                        Log.d(TAG, "  最大点: (" + bbox[2] + "m, " + bbox[3] + "m) -> (" +
+                                   String.format("%.6f", maxPoint[0]) + "°, " +
+                                   String.format("%.6f", maxPoint[1]) + "°)");
+
+                        // 替换bbox为转换后的值
+                        bbox = convertedBbox;
+                    } else {
+                        Log.d(TAG, "检测到单位类型: WGS84（度）");
+                        Log.d(TAG, "bbox值在合理范围内，无需转换");
+                    }
+
+                    // 计算并显示lat/lon范围
+                    double latRange = bbox[3] - bbox[1];
+                    double lonRange = bbox[2] - bbox[0];
+                    Log.d(TAG, "latRange: " + String.format("%.6f", latRange) + "° (约" +
+                               String.format("%.1f", latRange * 111000) + "米)");
+                    Log.d(TAG, "lonRange: " + String.format("%.6f", lonRange) + "° (约" +
+                               String.format("%.1f", lonRange * 111000) + "米)");
+                    Log.d(TAG, "=================================");
+
+                    // Step 4: 计算最优网格大小（现在bbox已经是WGS84度数）
                     updateStatus("分析点云密度...");
                     final double gridSize = calculateOptimalGridSize(totalPoints, bbox);
                     optimalGridSize = gridSize;  // 保存以供后续引用
@@ -521,17 +578,69 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                     Log.d(TAG, "  网格大小: " + gridSize + " 度 (~" +
                           String.format("%.1f", gridSize * 111000) + " 米)");
 
-                    // 批量处理网格单元
+                    // 基于高度过滤和排序网格 - 优先显示大建筑物
                     List<GridCell> cellList = new ArrayList<>(gridCells);
-                    for (int i = 0; i < cellList.size(); i += BATCH_SIZE) {
-                        int endIndex = Math.min(i + BATCH_SIZE, cellList.size());
+
+                    // 计算每个网格的高度
+                    for (GridCell cell : cellList) {
+                        double height = cell.getAvgZ() * 0.7 + cell.getMaxZ() * 0.3;
+                        cell.calculatedHeight = height;  // 临时存储计算的高度
+                    }
+
+                    // 按高度降序排序 - 高建筑优先
+                    cellList.sort((a, b) -> Double.compare(b.calculatedHeight, a.calculatedHeight));
+
+                    // 应用LOD策略：根据网格数量智能过滤
+                    int maxGridsToRender = 1000;  // 最多渲染1万个网格（从5万降低，与TARGET_GRIDS一致）
+                    List<GridCell> filteredCells = applyHeightBasedLOD(cellList, maxGridsToRender);
+                    int actualGridsToRender = filteredCells.size();
+
+                    Log.d(TAG, "LOD过滤结果:");
+                    Log.d(TAG, "  原始网格数: " + totalGrids);
+                    Log.d(TAG, "  过滤后网格数: " + actualGridsToRender);
+                    Log.d(TAG, "  保留比例: " + String.format("%.1f", 100.0 * actualGridsToRender / totalGrids) + "%");
+
+                    // 记录开始处理前的内存状态
+                    Runtime runtime = Runtime.getRuntime();
+                    long totalMemory = runtime.totalMemory();
+                    long freeMemory = runtime.freeMemory();
+                    long usedMemory = totalMemory - freeMemory;
+                    long maxMemory = runtime.maxMemory();
+
+                    Log.d(TAG, "=== 内存状态（处理开始前） ===");
+                    Log.d(TAG, "已用内存: " + (usedMemory / 1024 / 1024) + " MB");
+                    Log.d(TAG, "空闲内存: " + (freeMemory / 1024 / 1024) + " MB");
+                    Log.d(TAG, "总内存: " + (totalMemory / 1024 / 1024) + " MB");
+                    Log.d(TAG, "最大内存: " + (maxMemory / 1024 / 1024) + " MB");
+                    Log.d(TAG, "内存使用率: " + String.format("%.1f", 100.0 * usedMemory / maxMemory) + "%");
+                    Log.d(TAG, "=============================");
+
+                    // 批量处理过滤后的网格单元
+                    for (int i = 0; i < filteredCells.size(); i += BATCH_SIZE) {
+                        // 内存保护机制：检查可用内存
+                        runtime = Runtime.getRuntime();
+                        long currentFreeMemory = runtime.freeMemory();
+                        long currentMaxMemory = runtime.maxMemory();
+                        long currentUsedMemory = runtime.totalMemory() - currentFreeMemory;
+                        double memoryUsagePercent = 100.0 * currentUsedMemory / currentMaxMemory;
+
+                        // 如果内存使用超过80%，提前结束处理
+                        if (memoryUsagePercent > 80.0) {
+                            Log.w(TAG, "=== 内存不足警告 ===");
+                            Log.w(TAG, "当前内存使用率: " + String.format("%.1f", memoryUsagePercent) + "%");
+                            Log.w(TAG, "已加载网格数: " + loadedGrids + "/" + actualGridsToRender);
+                            Log.w(TAG, "提前终止处理以避免内存溢出");
+                            Log.w(TAG, "====================");
+                            updateStatus("内存不足，已加载 " + loadedGrids + " 个网格");
+                            break;
+                        }
+                        int endIndex = Math.min(i + BATCH_SIZE, filteredCells.size());
                         List<Polygon> batchPolygons = new ArrayList<>();
 
                         // 为批次中的每个网格单元创建3D建筑
                         for (int j = i; j < endIndex; j++) {
-                            GridCell cell = cellList.get(j);
-                            // 计算高度使用加权平均（70%平均 + 30%最大）
-                            double height = cell.getAvgZ() * 0.7 + cell.getMaxZ() * 0.3;
+                            GridCell cell = filteredCells.get(j);
+                            double height = cell.calculatedHeight;  // 使用已计算的高度
                             List<Polygon> columnPolygons = createGridBuilding3D(cell, gridSize, height);
                             batchPolygons.addAll(columnPolygons);
                             loadedGrids++;
@@ -547,14 +656,39 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                             wwd.requestRedraw();
                         });
 
+                        // 显式清理临时集合以释放内存
+                        batchPolygons.clear();
+                        batchPolygons = null;
+
+                        // 每批处理后记录内存使用情况
+                        if (loadedGrids % (BATCH_SIZE * 5) == 0) {
+                            runtime = Runtime.getRuntime();
+                            long batchUsedMemory = runtime.totalMemory() - runtime.freeMemory();
+                            Log.d(TAG, "内存监控 [" + loadedGrids + "/" + actualGridsToRender + "]: " +
+                                    (batchUsedMemory / 1024 / 1024) + " MB / " +
+                                    (runtime.maxMemory() / 1024 / 1024) + " MB (" +
+                                    String.format("%.1f", 100.0 * batchUsedMemory / runtime.maxMemory()) + "%)");
+                        }
+
                         // 每100个网格更新一次进度
                         if (loadedGrids % PROGRESS_UPDATE_INTERVAL == 0) {
-                            updateStatus("已加载 " + loadedGrids + "/" + totalGrids + " 个网格");
+                            updateStatus("已加载 " + loadedGrids + "/" + actualGridsToRender + " 个网格");
                         }
                     }
 
+                    // 处理完成后记录最终内存状态
+                    runtime = Runtime.getRuntime();
+                    long finalUsedMemory = runtime.totalMemory() - runtime.freeMemory();
+                    long finalMaxMemory = runtime.maxMemory();
+                    Log.d(TAG, "=== 内存状态（处理完成后） ===");
+                    Log.d(TAG, "已用内存: " + (finalUsedMemory / 1024 / 1024) + " MB");
+                    Log.d(TAG, "最大内存: " + (finalMaxMemory / 1024 / 1024) + " MB");
+                    Log.d(TAG, "内存使用率: " + String.format("%.1f", 100.0 * finalUsedMemory / finalMaxMemory) + "%");
+                    Log.d(TAG, "内存增长: " + ((finalUsedMemory - usedMemory) / 1024 / 1024) + " MB");
+                    Log.d(TAG, "=============================");
+
                     Log.d(TAG, "3D网格建筑创建完成: " + loadedGrids + " 个网格");
-                    updateStatus("已加载 " + loadedGrids + " 个3D网格建筑");
+                    updateStatus("已加载 " + loadedGrids + " 个3D网格建筑(优先显示大建筑)");
 
                 } else {
                     // Polygon数据 - 使用原始逻辑
@@ -1415,6 +1549,9 @@ public class MyShapeLoadActivity extends AppCompatActivity {
         final double centerLon;
         final List<Double> zValues = new ArrayList<>();
 
+        // LOD相关：临时存储计算的高度，用于排序和过滤
+        double calculatedHeight = 0.0;
+
         GridCell(double centerLat, double centerLon) {
             this.centerLat = centerLat;
             this.centerLon = centerLon;
@@ -1443,8 +1580,10 @@ public class MyShapeLoadActivity extends AppCompatActivity {
     }
 
     /**
-     * 点云转3D网格转换器
+     * 点云转3D网格转换器（优化版 - 使用相对坐标系统）
      * 将点云数据栅格化为规则网格，每个网格单元记录内部点的Z值
+     *
+     * 关键优化：使用相对于数据边界的坐标系统，避免大坐标值导致的溢出问题
      */
     private static class PointCloudTo3DConverter {
         private final double gridSize;  // 网格大小（度）
@@ -1453,6 +1592,12 @@ public class MyShapeLoadActivity extends AppCompatActivity {
         private double maxLat = -Double.MAX_VALUE;
         private double minLon = Double.MAX_VALUE;
         private double maxLon = -Double.MAX_VALUE;
+
+        // 原点坐标 - 用于相对坐标计算
+        private double originLat = 0.0;
+        private double originLon = 0.0;
+        private boolean originSet = false;
+
         private int totalPoints = 0;
 
         /**
@@ -1471,21 +1616,28 @@ public class MyShapeLoadActivity extends AppCompatActivity {
          * @param z 高程值
          */
         void addPoint(double lat, double lon, double z) {
+            // 第一次调用时设置原点
+            if (!originSet) {
+                originLat = lat;
+                originLon = lon;
+                originSet = true;
+            }
+
             // 更新边界
             minLat = Math.min(minLat, lat);
             maxLat = Math.max(maxLat, lat);
             minLon = Math.min(minLon, lon);
             maxLon = Math.max(maxLon, lon);
 
-            // 计算网格坐标
+            // 计算网格坐标（使用相对坐标）
             GridCoord coord = getGridCoord(lat, lon);
 
             // 获取或创建网格单元
             GridCell cell = gridMap.get(coord);
             if (cell == null) {
-                // 计算网格中心坐标
-                double centerLat = (coord.gridY + 0.5) * gridSize;
-                double centerLon = (coord.gridX + 0.5) * gridSize;
+                // 计算网格中心坐标（绝对坐标）
+                double centerLat = originLat + (coord.gridY + 0.5) * gridSize;
+                double centerLon = originLon + (coord.gridX + 0.5) * gridSize;
                 cell = new GridCell(centerLat, centerLon);
                 gridMap.put(coord, cell);
             }
@@ -1496,11 +1648,18 @@ public class MyShapeLoadActivity extends AppCompatActivity {
         }
 
         /**
-         * 计算点所属的网格坐标
+         * 计算点所属的网格坐标（使用相对坐标系统）
+         * 关键修复：使用相对于原点的坐标，避免大坐标值导致的整数溢出
          */
         private GridCoord getGridCoord(double lat, double lon) {
-            int gridX = (int) Math.floor(lon / gridSize);
-            int gridY = (int) Math.floor(lat / gridSize);
+            // 计算相对于原点的偏移量
+            double relativeLat = lat - originLat;
+            double relativeLon = lon - originLon;
+
+            // 基于相对坐标计算网格索引
+            int gridX = (int) Math.floor(relativeLon / gridSize);
+            int gridY = (int) Math.floor(relativeLat / gridSize);
+
             return new GridCoord(gridX, gridY);
         }
 
