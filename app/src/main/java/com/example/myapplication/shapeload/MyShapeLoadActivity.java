@@ -38,16 +38,16 @@ import gov.nasa.worldwind.shape.Polygon;
 import gov.nasa.worldwind.shape.ShapeAttributes;
 
 /**
- * Activity for loading and displaying Polygon shapefile with 3D building representations
+ * 用于加载和显示带有3D建筑物表示的Polygon shapefile的Activity
  *
- * This activity demonstrates:
- * - Loading Polygon shapefile from assets (buildings)
- * - Converting Web Mercator (EPSG:3857) to WGS84 automatically
- * - Creating 3D buildings from polygon footprints
- * - Extracting building heights from DBF attributes
- * - Color mapping based on building height (blue to red gradient)
- * - Efficient batch processing for large datasets
- * - Asynchronous loading with progress updates
+ * 此Activity演示了:
+ * - 从assets加载Polygon shapefile(建筑物)
+ * - 自动将Web Mercator(EPSG:3857)转换为WGS84
+ * - 从多边形轮廓创建3D建筑物
+ * - 从DBF属性提取建筑物高度
+ * - 基于建筑物高度的颜色映射(蓝色到红色渐变)
+ * - 大数据集的高效批处理
+ * - 带进度更新的异步加载
  */
 public class MyShapeLoadActivity extends AppCompatActivity {
 
@@ -58,17 +58,17 @@ public class MyShapeLoadActivity extends AppCompatActivity {
 
     private static final String TAG = "MyShapeLoadActivity";
 
-    // Shapefile paths in assets
+    // assets中的Shapefile路径
     private static final String SHAPEFILE_PATH = "shp/cs.shp";
     private static final String DBF_PATH = "shp/cs.dbf";
     private static final String PRJ_PATH = "shp/cs.prj";
     private static final String CPG_PATH = "shp/cs.cpg";
 
-    // Batch processing configuration for performance
-    private static final int BATCH_SIZE = 1000;  // Process 1000 buildings per batch
-    private static final int PROGRESS_UPDATE_INTERVAL = 100;  // Update every 100 buildings
+    // 性能批处理配置
+    private static final int BATCH_SIZE = 1000;  // 每批处理1000个建筑物
+    private static final int PROGRESS_UPDATE_INTERVAL = 100;  // 每100个建筑物更新一次
 
-    // WorldWind components
+    // WorldWind组件
     protected WorldWindow wwd;
     protected TextView statusText;
     protected TextView projectionText;
@@ -76,44 +76,44 @@ public class MyShapeLoadActivity extends AppCompatActivity {
     private ExecutorService executorService;
     private Handler mainHandler;
 
-    // Track bounding box of all loaded geometry
+    // 跟踪所有已加载几何体的边界框
     private double minLat = Double.MAX_VALUE;
     private double maxLat = -Double.MAX_VALUE;
     private double minLon = Double.MAX_VALUE;
     private double maxLon = -Double.MAX_VALUE;
 
-    // Statistics
+    // 统计信息
     private int totalPolygons = 0;
     private int loadedPolygons = 0;
 
-    // Building height statistics
+    // 建筑物高度统计
     private int buildingsWithHeight = 0;
     private double minHeight = Double.MAX_VALUE;
     private double maxHeight = 0.0;
     private double totalHeight = 0.0;
 
-    // Grid statistics
+    // 网格统计
     private int totalGrids = 0;
     private int loadedGrids = 0;
 
-    // Point cloud statistics
+    // 点云统计
     private int totalPoints = 0;
     private int loadedPoints = 0;
 
-    // Z-value statistics for PointZ data
+    // PointZ数据的Z值统计
     private double globalMinZ = 0.0;
     private double globalMaxZ = 0.0;
 
-    // Height percentiles for dynamic color mapping
+    // 用于动态颜色映射的高度百分位数
     private double heightP25 = 0.0;
     private double heightP50 = 0.0;
     private double heightP75 = 0.0;
     private double heightP95 = 0.0;
 
-    // Optimal grid size (calculated dynamically)
-    private double optimalGridSize = 0.0001;  // Default 0.0001° (~11m)
+    // 最优网格大小(动态计算)
+    private double optimalGridSize = 0.0001;  // 默认0.0001°(约11米)
 
-    // Projection information
+    // 投影信息
     private String projectionInfo = "Unknown";
 
     @Override
@@ -121,54 +121,53 @@ public class MyShapeLoadActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_load_shape);
 
-        // Initialize executor service and handler
+        // 初始化执行器服务和处理器
         executorService = Executors.newSingleThreadExecutor();
         mainHandler = new Handler(Looper.getMainLooper());
 
-        // Get UI components
+        // 获取UI组件
         statusText = findViewById(R.id.status_text);
         projectionText = findViewById(R.id.projection_text);
 
-        // Create the WorldWindow (a GLSurfaceView) which displays the globe
+        // 创建WorldWindow(GLSurfaceView)，用于显示地球
         wwd = new WorldWindow(this);
 
-        // Add the WorldWindow view object to the layout
+        // 将WorldWindow视图对象添加到布局
         FrameLayout globeLayout = findViewById(R.id.globe);
         globeLayout.addView(wwd);
 
-        // Setup the WorldWindow's layers
+        // 设置WorldWindow的图层
         initializeWorldWindow();
 
-        // Load Shapefile
+        // 加载Shapefile
         loadShapefile();
     }
 
     /**
-     * Initialize WorldWindow with base layers and Shapefile layer
+     * 使用基础图层和Shapefile图层初始化WorldWindow
      */
     private void initializeWorldWindow() {
-        Log.d(TAG, "Initializing WorldWindow");
+        Log.d(TAG, "初始化WorldWindow");
 
-        // Add base layers
+        // 添加基础图层
         wwd.getLayers().addLayer(new BackgroundLayer());
         wwd.getLayers().addLayer(new BlueMarbleLandsatLayer());
         wwd.getLayers().addLayer(new AtmosphereLayer());
 
-        // Setup elevation model
+        // 设置高程模型
         wwd.getGlobe().getElevationModel().addCoverage(new BasicElevationCoverage());
 
-        // Create layer for Shapefile content
+        // 创建Shapefile内容图层
         shapefileLayer = new RenderableLayer("Building Layer");
         wwd.getLayers().addLayer(shapefileLayer);
 
-        Log.d(TAG, "WorldWindow initialized");
+        Log.d(TAG, "WorldWindow已初始化");
     }
 
     /**
-     * Load character encoding from .cpg file
-     * 从 .cpg 文件加载字符编码
+     * 从.cpg文件加载字符编码
      *
-     * @return The character encoding name (e.g., "UTF-8", "GBK"), or null if not found
+     * @return 字符编码名称(例如"UTF-8"、"GBK")，如果未找到则返回null
      */
     private String loadCharacterEncoding() {
         try {
@@ -178,31 +177,31 @@ public class MyShapeLoadActivity extends AppCompatActivity {
             cpgStream.close();
 
             if (bytesRead > 0) {
-                // Read the encoding name and trim whitespace
+                // 读取编码名称并修剪空白
                 String encoding = new String(buffer, 0, bytesRead, "UTF-8").trim();
 
-                // Handle common encoding aliases
+                // 处理常见编码别名
                 if (encoding.equalsIgnoreCase("UTF8")) {
                     encoding = "UTF-8";
                 } else if (encoding.equalsIgnoreCase("GBK") || encoding.equalsIgnoreCase("GB2312")) {
-                    encoding = "GBK"; // GBK is a superset of GB2312
+                    encoding = "GBK"; // GBK是GB2312的超集
                 }
 
-                Log.d(TAG, "=== Character Encoding ===");
-                Log.d(TAG, "Encoding from .cpg: " + encoding);
+                Log.d(TAG, "=== 字符编码 ===");
+                Log.d(TAG, "从.cpg读取的编码: " + encoding);
                 return encoding;
             } else {
-                Log.w(TAG, ".cpg file is empty, using default UTF-8 encoding");
+                Log.w(TAG, ".cpg文件为空，使用默认UTF-8编码");
                 return null;
             }
         } catch (Exception e) {
-            Log.w(TAG, ".cpg file not found, using default UTF-8 encoding: " + e.getMessage());
+            Log.w(TAG, "未找到.cpg文件，使用默认UTF-8编码: " + e.getMessage());
             return null;
         }
     }
 
     /**
-     * Load projection information from .prj file
+     * 从.prj文件加载投影信息
      */
     private void loadProjectionInfo() {
         try {
@@ -214,92 +213,92 @@ public class MyShapeLoadActivity extends AppCompatActivity {
             if (bytesRead > 0) {
                 String prjContent = new String(buffer, 0, bytesRead, "UTF-8").trim();
 
-                // Parse projection name from WKT format
+                // 从WKT格式解析投影名称
                 if (prjContent.contains("WGS_1984_Web_Mercator")) {
                     projectionInfo = "WGS 1984 Web Mercator (EPSG:3857)";
                 } else if (prjContent.contains("WGS_84") || prjContent.contains("WGS84")) {
                     projectionInfo = "WGS 84 (EPSG:4326)";
                 } else {
-                    projectionInfo = "Custom Projection";
+                    projectionInfo = "自定义投影";
                 }
 
-                Log.d(TAG, "Projection info: " + projectionInfo);
+                Log.d(TAG, "投影信息: " + projectionInfo);
             }
         } catch (Exception e) {
-            Log.w(TAG, ".prj file not found, assuming WGS84: " + e.getMessage());
-            projectionInfo = "WGS 84 (assumed)";
+            Log.w(TAG, "未找到.prj文件，假定为WGS84: " + e.getMessage());
+            projectionInfo = "WGS 84 (假定)";
         }
     }
 
     /**
-     * Calculate optimal grid size based on point density and geographic bounds
+     * 基于点密度和地理边界计算最优网格大小
      *
-     * Strategy:
-     * - High density (>500k points): finer grid (0.00003° ~ 3.3m)
-     * - Medium density (100k-500k): medium grid (0.00005° ~ 5.5m)
-     * - Low density (<100k): coarser grid (0.0001° ~ 11m)
+     * 策略:
+     * - 高密度(>500k个点): 更细网格(0.00003°约3.3米)
+     * - 中密度(100k-500k): 中等网格(0.00005°约5.5米)
+     * - 低密度(<100k): 较粗网格(0.0001°约11米)
      *
-     * Also considers geographic bounds to ensure reasonable grid count
+     * 还考虑地理边界以确保合理的网格数量
      *
-     * FIXED: Integer overflow issue - now uses long for grid count calculations
+     * 已修复: 整数溢出问题 - 现在使用long进行网格计数计算
      *
-     * @param pointCount Total number of points in the dataset
-     * @param bbox Bounding box [minX, minY, maxX, maxY]
-     * @return Optimal grid size in degrees
+     * @param pointCount 数据集中的总点数
+     * @param bbox 边界框[minX, minY, maxX, maxY]
+     * @return 最优网格大小(度)
      */
     private double calculateOptimalGridSize(int pointCount, double[] bbox) {
-        // Grid count constraints to prevent overflow and ensure reasonable performance
-        final long MAX_GRIDS = 500000;  // Maximum 500k grids (~710 points/grid for 1M points)
-        final long MIN_GRIDS = 1000;    // Minimum 1000 grids for reasonable detail
+        // 网格数量约束，防止溢出并确保合理性能
+        final long MAX_GRIDS = 500000;  // 最大500k个网格(对于100万个点约710点/网格)
+        final long MIN_GRIDS = 1000;    // 最小1000个网格以保证合理细节
 
-        // Calculate geographic area
+        // 计算地理区域
         double latRange = bbox[3] - bbox[1];
         double lonRange = bbox[2] - bbox[0];
-        double area = latRange * lonRange;  // in square degrees
+        double area = latRange * lonRange;  // 平方度
 
-        // Calculate point density (points per square degree)
+        // 计算点密度(点数/平方度)
         double density = pointCount / area;
 
-        Log.d(TAG, "=== Grid Size Calculation ===");
-        Log.d(TAG, "Total points: " + pointCount);
-        Log.d(TAG, "Geographic area: " + String.format("%.6f", area) + " sq degrees");
-        Log.d(TAG, "Latitude range: " + String.format("%.6f", latRange) + "° (~" +
-                   String.format("%.1f", latRange * 111000) + " m)");
-        Log.d(TAG, "Longitude range: " + String.format("%.6f", lonRange) + "° (~" +
-                   String.format("%.1f", lonRange * 111000) + " m)");
-        Log.d(TAG, "Point density: " + String.format("%.0f", density) + " points/sq degree");
+        Log.d(TAG, "=== 网格大小计算 ===");
+        Log.d(TAG, "总点数: " + pointCount);
+        Log.d(TAG, "地理区域: " + String.format("%.6f", area) + " 平方度");
+        Log.d(TAG, "纬度范围: " + String.format("%.6f", latRange) + "° (约" +
+                   String.format("%.1f", latRange * 111000) + " 米)");
+        Log.d(TAG, "经度范围: " + String.format("%.6f", lonRange) + "° (约" +
+                   String.format("%.1f", lonRange * 111000) + " 米)");
+        Log.d(TAG, "点密度: " + String.format("%.0f", density) + " 点/平方度");
 
         double gridSize;
 
-        // Determine initial grid size based on point count and density
+        // 根据点数和密度确定初始网格大小
         if (pointCount > 500000) {
-            // Very high density: use finer grid (3-5 meters)
-            gridSize = 0.00003;  // ~3.3 meters
-            Log.d(TAG, "High density detected: using fine grid (0.00003° ~ 3.3m)");
+            // 非常高密度: 使用更细网格(3-5米)
+            gridSize = 0.00003;  // 约3.3米
+            Log.d(TAG, "检测到高密度: 使用细网格(0.00003° 约3.3米)");
         } else if (pointCount > 100000) {
-            // Medium-high density: use medium-fine grid (5-7 meters)
-            gridSize = 0.00005;  // ~5.5 meters
-            Log.d(TAG, "Medium-high density detected: using medium-fine grid (0.00005° ~ 5.5m)");
+            // 中高密度: 使用中细网格(5-7米)
+            gridSize = 0.00005;  // 约5.5米
+            Log.d(TAG, "检测到中高密度: 使用中细网格(0.00005° 约5.5米)");
         } else if (pointCount > 50000) {
-            // Medium density: use medium grid (7-11 meters)
-            gridSize = 0.00007;  // ~7.7 meters
-            Log.d(TAG, "Medium density detected: using medium grid (0.00007° ~ 7.7m)");
+            // 中等密度: 使用中等网格(7-11米)
+            gridSize = 0.00007;  // 约7.7米
+            Log.d(TAG, "检测到中等密度: 使用中等网格(0.00007° 约7.7米)");
         } else {
-            // Lower density: use default grid (11 meters)
-            gridSize = 0.0001;  // ~11 meters
-            Log.d(TAG, "Lower density detected: using default grid (0.0001° ~ 11m)");
+            // 较低密度: 使用默认网格(11米)
+            gridSize = 0.0001;  // 约11米
+            Log.d(TAG, "检测到较低密度: 使用默认网格(0.0001° 约11米)");
         }
 
-        // FIXED: Use long to prevent integer overflow
-        // Calculate number of grids in each dimension separately to avoid overflow
+        // 已修复: 使用long防止整数溢出
+        // 分别计算每个维度的网格数以避免溢出
         long latGrids = (long) Math.ceil(latRange / gridSize);
         long lonGrids = (long) Math.ceil(lonRange / gridSize);
 
-        // Check for potential overflow before multiplication
+        // 在乘法之前检查潜在溢出
         if (latGrids > 0 && lonGrids > Long.MAX_VALUE / latGrids) {
-            Log.e(TAG, "ERROR: Grid calculation would overflow! latGrids=" + latGrids +
+            Log.e(TAG, "错误: 网格计算将溢出! latGrids=" + latGrids +
                        ", lonGrids=" + lonGrids);
-            // Use a very large grid size as fallback
+            // 使用非常大的网格大小作为后备
             gridSize = Math.sqrt(area / MAX_GRIDS);
             latGrids = (long) Math.ceil(latRange / gridSize);
             lonGrids = (long) Math.ceil(lonRange / gridSize);
@@ -307,18 +306,18 @@ public class MyShapeLoadActivity extends AppCompatActivity {
 
         long estimatedGrids = latGrids * lonGrids;
 
-        Log.d(TAG, "Initial grid estimation:");
-        Log.d(TAG, "  Grid size: " + String.format("%.6f", gridSize) + "°");
-        Log.d(TAG, "  Latitude grids: " + latGrids);
-        Log.d(TAG, "  Longitude grids: " + lonGrids);
-        Log.d(TAG, "  Estimated total grids: " + estimatedGrids);
-        Log.d(TAG, "  Points per grid: " + (estimatedGrids > 0 ? (pointCount / estimatedGrids) : 0));
+        Log.d(TAG, "初始网格估算:");
+        Log.d(TAG, "  网格大小: " + String.format("%.6f", gridSize) + "°");
+        Log.d(TAG, "  纬度网格数: " + latGrids);
+        Log.d(TAG, "  经度网格数: " + lonGrids);
+        Log.d(TAG, "  估计总网格数: " + estimatedGrids);
+        Log.d(TAG, "  每网格点数: " + (estimatedGrids > 0 ? (pointCount / estimatedGrids) : 0));
 
-        // Iterative adjustment: If grid count is too high, increase grid size
+        // 迭代调整: 如果网格数太多，增加网格大小
         int adjustmentIterations = 0;
         while (estimatedGrids > MAX_GRIDS && adjustmentIterations < 10) {
             adjustmentIterations++;
-            // Increase grid size by factor to reduce grid count
+            // 通过系数增加网格大小以减少网格数
             double adjustmentFactor = Math.sqrt((double) estimatedGrids / MAX_GRIDS);
             gridSize *= adjustmentFactor;
 
@@ -326,24 +325,24 @@ public class MyShapeLoadActivity extends AppCompatActivity {
             lonGrids = (long) Math.ceil(lonRange / gridSize);
             estimatedGrids = latGrids * lonGrids;
 
-            Log.d(TAG, "Adjustment iteration " + adjustmentIterations + " (too many grids):");
-            Log.d(TAG, "  New grid size: " + String.format("%.6f", gridSize) + "° (~" +
-                       String.format("%.1f", gridSize * 111000) + "m)");
-            Log.d(TAG, "  Estimated grids: " + estimatedGrids);
-            Log.d(TAG, "  Points per grid: " + (pointCount / estimatedGrids));
+            Log.d(TAG, "调整迭代 " + adjustmentIterations + " (网格太多):");
+            Log.d(TAG, "  新网格大小: " + String.format("%.6f", gridSize) + "° (约" +
+                       String.format("%.1f", gridSize * 111000) + "米)");
+            Log.d(TAG, "  估计网格数: " + estimatedGrids);
+            Log.d(TAG, "  每网格点数: " + (pointCount / estimatedGrids));
         }
 
-        // Iterative adjustment: If grid count is too low, decrease grid size
+        // 迭代调整: 如果网格数太少，减小网格大小
         adjustmentIterations = 0;
         while (estimatedGrids < MIN_GRIDS && pointCount > 10000 && adjustmentIterations < 10) {
             adjustmentIterations++;
-            // Decrease grid size by factor to increase grid count
+            // 通过系数减小网格大小以增加网格数
             double adjustmentFactor = Math.sqrt((double) MIN_GRIDS / estimatedGrids);
             gridSize /= adjustmentFactor;
 
-            // Don't make grid size too small
-            if (gridSize < 0.00001) {  // ~1.1 meters minimum
-                Log.d(TAG, "Grid size reached minimum threshold (0.00001°), stopping adjustment");
+            // 不要让网格大小太小
+            if (gridSize < 0.00001) {  // 最小约1.1米
+                Log.d(TAG, "网格大小达到最小阈值(0.00001°)，停止调整");
                 gridSize = 0.00001;
                 break;
             }
@@ -352,112 +351,112 @@ public class MyShapeLoadActivity extends AppCompatActivity {
             lonGrids = (long) Math.ceil(lonRange / gridSize);
             estimatedGrids = latGrids * lonGrids;
 
-            Log.d(TAG, "Adjustment iteration " + adjustmentIterations + " (too few grids):");
-            Log.d(TAG, "  New grid size: " + String.format("%.6f", gridSize) + "° (~" +
-                       String.format("%.1f", gridSize * 111000) + "m)");
-            Log.d(TAG, "  Estimated grids: " + estimatedGrids);
-            Log.d(TAG, "  Points per grid: " + (pointCount / estimatedGrids));
+            Log.d(TAG, "调整迭代 " + adjustmentIterations + " (网格太少):");
+            Log.d(TAG, "  新网格大小: " + String.format("%.6f", gridSize) + "° (约" +
+                       String.format("%.1f", gridSize * 111000) + "米)");
+            Log.d(TAG, "  估计网格数: " + estimatedGrids);
+            Log.d(TAG, "  每网格点数: " + (pointCount / estimatedGrids));
         }
 
-        // Final calculation and logging
+        // 最终计算和日志记录
         latGrids = (long) Math.ceil(latRange / gridSize);
         lonGrids = (long) Math.ceil(lonRange / gridSize);
         estimatedGrids = latGrids * lonGrids;
 
-        Log.d(TAG, "=== Final Grid Configuration ===");
-        Log.d(TAG, "Grid size: " + String.format("%.6f", gridSize) + "° (~" +
-                   String.format("%.1f", gridSize * 111000) + "m)");
-        Log.d(TAG, "Latitude grids: " + latGrids);
-        Log.d(TAG, "Longitude grids: " + lonGrids);
-        Log.d(TAG, "Total estimated grids: " + estimatedGrids);
-        Log.d(TAG, "Points per grid (average): " + (estimatedGrids > 0 ? (pointCount / estimatedGrids) : 0));
-        Log.d(TAG, "Grid coverage: " + String.format("%.1f", gridSize * 111000) + "m × " +
-                   String.format("%.1f", gridSize * 111000) + "m");
+        Log.d(TAG, "=== 最终网格配置 ===");
+        Log.d(TAG, "网格大小: " + String.format("%.6f", gridSize) + "° (约" +
+                   String.format("%.1f", gridSize * 111000) + "米)");
+        Log.d(TAG, "纬度网格数: " + latGrids);
+        Log.d(TAG, "经度网格数: " + lonGrids);
+        Log.d(TAG, "总估计网格数: " + estimatedGrids);
+        Log.d(TAG, "每网格点数(平均): " + (estimatedGrids > 0 ? (pointCount / estimatedGrids) : 0));
+        Log.d(TAG, "网格覆盖范围: " + String.format("%.1f", gridSize * 111000) + "米 × " +
+                   String.format("%.1f", gridSize * 111000) + "米");
         Log.d(TAG, "================================");
 
         return gridSize;
     }
 
     /**
-     * Calculate height percentiles from normalized Z values
-     * Used for dynamic color mapping based on actual data distribution
+     * 从归一化Z值计算高度百分位数
+     * 用于基于实际数据分布的动态颜色映射
      *
-     * @param zValues List of all normalized Z values
+     * @param zValues 所有归一化Z值的列表
      */
     private void calculateHeightPercentiles(List<Double> zValues) {
         if (zValues.isEmpty()) {
-            Log.w(TAG, "No Z values available for percentile calculation");
+            Log.w(TAG, "无可用Z值用于百分位数计算");
             return;
         }
 
-        // Sort the Z values
+        // 对Z值排序
         List<Double> sortedZ = new ArrayList<>(zValues);
         Collections.sort(sortedZ);
 
         int n = sortedZ.size();
 
-        // Calculate percentiles
+        // 计算百分位数
         heightP25 = sortedZ.get((int) (n * 0.25));
-        heightP50 = sortedZ.get((int) (n * 0.50));  // Median
+        heightP50 = sortedZ.get((int) (n * 0.50));  // 中位数
         heightP75 = sortedZ.get((int) (n * 0.75));
         heightP95 = sortedZ.get((int) (n * 0.95));
 
-        Log.d(TAG, "=== Height Percentile Analysis ===");
-        Log.d(TAG, "Total data points: " + n);
-        Log.d(TAG, "Min height: " + String.format("%.2f", sortedZ.get(0)) + "m");
-        Log.d(TAG, "P25 (25th percentile): " + String.format("%.2f", heightP25) + "m");
-        Log.d(TAG, "P50 (Median): " + String.format("%.2f", heightP50) + "m");
-        Log.d(TAG, "P75 (75th percentile): " + String.format("%.2f", heightP75) + "m");
-        Log.d(TAG, "P95 (95th percentile): " + String.format("%.2f", heightP95) + "m");
-        Log.d(TAG, "Max height: " + String.format("%.2f", sortedZ.get(n - 1)) + "m");
+        Log.d(TAG, "=== 高度百分位数分析 ===");
+        Log.d(TAG, "总数据点数: " + n);
+        Log.d(TAG, "最小高度: " + String.format("%.2f", sortedZ.get(0)) + "米");
+        Log.d(TAG, "P25(第25百分位数): " + String.format("%.2f", heightP25) + "米");
+        Log.d(TAG, "P50(中位数): " + String.format("%.2f", heightP50) + "米");
+        Log.d(TAG, "P75(第75百分位数): " + String.format("%.2f", heightP75) + "米");
+        Log.d(TAG, "P95(第95百分位数): " + String.format("%.2f", heightP95) + "米");
+        Log.d(TAG, "最大高度: " + String.format("%.2f", sortedZ.get(n - 1)) + "米");
         Log.d(TAG, "==================================");
     }
 
     /**
-     * Load and parse the Shapefile asynchronously
+     * 异步加载和解析Shapefile
      */
     private void loadShapefile() {
-        Log.d(TAG, "=== Starting Shapefile Load ===");
-        Log.d(TAG, "Shapefile path: " + SHAPEFILE_PATH);
-        updateStatus("Loading Building Shapefile...");
+        Log.d(TAG, "=== 开始加载Shapefile ===");
+        Log.d(TAG, "Shapefile路径: " + SHAPEFILE_PATH);
+        updateStatus("正在加载建筑物Shapefile...");
 
         executorService.execute(() -> {
             ShapefileReader shpReader = new ShapefileReader();
             DBFReader dbfReader = null;
 
             try {
-                // Step 1: Load projection and encoding information
+                // 步骤1: 加载投影和编码信息
                 loadProjectionInfo();
                 String characterEncoding = loadCharacterEncoding();
                 updateProjectionDisplay();
 
-                // Step 2: Load and parse .shp file
-                updateStatus("Reading geometry file (.shp)...");
+                // 步骤2: 加载并解析.shp文件
+                updateStatus("正在读取几何文件(.shp)...");
                 InputStream shpStream = getAssets().open(SHAPEFILE_PATH);
                 shpReader.read(shpStream);
                 shpStream.close();
 
                 final int shapeType = shpReader.getShapeType();
                 double[] bbox = shpReader.getBoundingBox();
-                Log.d(TAG, "Shape type: " + shapeType);
-                Log.d(TAG, "Bounding box: [" + bbox[0] + ", " + bbox[1] + ", " + bbox[2] + ", " + bbox[3] + "]");
-                Log.d(TAG, "Detected shape type: " + shapeType + " (" + getShapeTypeName(shapeType) + ")");
+                Log.d(TAG, "形状类型: " + shapeType);
+                Log.d(TAG, "边界框: [" + bbox[0] + ", " + bbox[1] + ", " + bbox[2] + ", " + bbox[3] + "]");
+                Log.d(TAG, "检测到形状类型: " + shapeType + " (" + getShapeTypeName(shapeType) + ")");
 
-                // Check shape type and process accordingly
+                // 检查形状类型并相应处理
                 if (shapeType == 11) {
-                    // PointZ data - use grid conversion
-                    Log.d(TAG, "=== PointZ Processing Branch ===");
+                    // PointZ数据 - 使用网格转换
+                    Log.d(TAG, "=== PointZ处理分支 ===");
                     List<ShapefileReader.PointZRecord> pointZRecords = shpReader.getPointZRecords();
-                    Log.d(TAG, "Total PointZ records: " + pointZRecords.size());
+                    Log.d(TAG, "总PointZ记录数: " + pointZRecords.size());
                     if (pointZRecords.isEmpty()) {
-                        Log.e(TAG, "ERROR: No PointZ records found!");
-                        updateStatus("Error: No PointZ data in file");
+                        Log.e(TAG, "错误: 未找到PointZ记录!");
+                        updateStatus("错误: 文件中无PointZ数据");
                         return;
                     }
                     totalPoints = pointZRecords.size();
-                    Log.d(TAG, "Shapefile loaded: " + totalPoints + " PointZ records");
+                    Log.d(TAG, "已加载Shapefile: " + totalPoints + " 条PointZ记录");
 
-                    // First pass: Find Z value range and collect all Z values
+                    // 第一遍扫描: 查找Z值范围并收集所有Z值
                     List<Double> allZValues = new ArrayList<>();
                     double globalMinZ = Double.MAX_VALUE;
                     double globalMaxZ = -Double.MAX_VALUE;
@@ -467,17 +466,17 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                         allZValues.add(point.z);
                     }
 
-                    Log.d(TAG, "Global Z range: min=" + globalMinZ + ", max=" + globalMaxZ + ", range=" + (globalMaxZ - globalMinZ));
+                    Log.d(TAG, "全局Z范围: 最小=" + globalMinZ + ", 最大=" + globalMaxZ + ", 范围=" + (globalMaxZ - globalMinZ));
 
-                    // Calculate height percentiles for dynamic color mapping
-                    updateStatus("Calculating height distribution...");
+                    // 计算高度百分位数用于动态颜色映射
+                    updateStatus("正在计算高度分布...");
                     List<Double> normalizedZValues = new ArrayList<>();
                     for (ShapefileReader.PointZRecord point : pointZRecords) {
                         normalizedZValues.add(point.z - globalMinZ);
                     }
                     calculateHeightPercentiles(normalizedZValues);
 
-                    // Save global Z values for metadata logging
+                    // 保存全局Z值用于元数据日志
                     this.globalMinZ = globalMinZ;
                     this.globalMaxZ = globalMaxZ;
 
@@ -558,94 +557,94 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                     updateStatus("已加载 " + loadedGrids + " 个3D网格建筑");
 
                 } else {
-                    // Polygon data - use original logic
+                    // Polygon数据 - 使用原始逻辑
                     List<ShapefileReader.PolygonRecord> polygons = shpReader.getPolygonRecords();
                     totalPolygons = polygons.size();
-                    Log.d(TAG, "Shapefile loaded: " + totalPolygons + " Polygon records");
+                    Log.d(TAG, "已加载Shapefile: " + totalPolygons + " 条Polygon记录");
 
-                    // Step 3: Load and parse .dbf file (attributes)
-                    updateStatus("Reading attributes file (.dbf)...");
+                    // 步骤3: 加载并解析.dbf文件(属性)
+                    updateStatus("正在读取属性文件(.dbf)...");
                     try {
                         InputStream dbfStream = getAssets().open(DBF_PATH);
                         dbfReader = new DBFReader();
                         dbfReader.read(dbfStream, characterEncoding);
                         dbfStream.close();
-                        Log.d(TAG, "DBF loaded: " + dbfReader.getRecordCount() + " records");
+                        Log.d(TAG, "已加载DBF: " + dbfReader.getRecordCount() + " 条记录");
                     } catch (Exception e) {
-                        Log.w(TAG, "Could not load DBF file (attributes will not be available): " + e.getMessage());
+                        Log.w(TAG, "无法加载DBF文件(属性将不可用): " + e.getMessage());
                     }
 
-                    // Step 4: Create 3D buildings from polygon records
-                    updateStatus("Creating 3D buildings (0/" + totalPolygons + ")...");
+                    // 步骤4: 从多边形记录创建3D建筑物
+                    updateStatus("正在创建3D建筑物(0/" + totalPolygons + ")...");
 
                     final DBFReader finalDbfReader = dbfReader;
 
-                    // Process polygons in batches for performance
+                    // 批量处理多边形以提高性能
                     for (int i = 0; i < polygons.size(); i += BATCH_SIZE) {
                         int endIndex = Math.min(i + BATCH_SIZE, polygons.size());
                         List<Polygon> batchPolygons = new ArrayList<>();
 
-                        // Create batch of 3D buildings
+                        // 创建3D建筑物批次
                         for (int j = i; j < endIndex; j++) {
                             ShapefileReader.PolygonRecord record = polygons.get(j);
 
-                            // Get attributes if available
+                            // 如果可用则获取属性
                             Map<String, Object> attributes = null;
                             if (finalDbfReader != null && j < finalDbfReader.getRecordCount()) {
                                 attributes = finalDbfReader.getRecord(j);
                             }
 
-                            // Create 3D building from polygon record
+                            // 从多边形记录创建3D建筑物
                             List<Polygon> buildingPolygons = createBuilding3D(record, attributes);
                             batchPolygons.addAll(buildingPolygons);
                             loadedPolygons++;
                         }
 
-                        // Add batch to layer on main thread
+                        // 在主线程上将批次添加到图层
                         final int currentCount = loadedPolygons;
                         mainHandler.post(() -> {
                             for (Polygon polygon : batchPolygons) {
                                 shapefileLayer.addRenderable(polygon);
                             }
 
-                            // Update progress periodically
+                            // 定期更新进度
                             if (currentCount % PROGRESS_UPDATE_INTERVAL == 0 || currentCount == totalPolygons) {
-                                updateStatus("Loading buildings (" + currentCount + "/" + totalPolygons + ")...");
+                                updateStatus("正在加载建筑物(" + currentCount + "/" + totalPolygons + ")...");
                             }
 
                             wwd.requestRedraw();
                         });
 
-                        // Brief pause to allow UI updates
+                        // 短暂暂停以允许UI更新
                         Thread.sleep(10);
                     }
                 }
 
-                // Step 5: Position camera and finalize
+                // 步骤5: 定位相机并完成
                 mainHandler.post(() -> {
                     positionCamera();
-                    Log.d(TAG, "Camera positioning complete");
-                    Log.d(TAG, "  Bounds: lat[" + minLat + ", " + maxLat + "], lon[" + minLon + ", " + maxLon + "]");
+                    Log.d(TAG, "相机定位完成");
+                    Log.d(TAG, "  边界: 纬度[" + minLat + ", " + maxLat + "], 经度[" + minLon + ", " + maxLon + "]");
                     logShapefileMetadata();
 
                     String statusMsg;
                     if (shapeType == 11) {
                         statusMsg = "已加载 " + loadedGrids + " 个3D网格建筑";
                     } else {
-                        statusMsg = "Loaded " + loadedPolygons + " buildings with 3D effects";
+                        statusMsg = "已加载 " + loadedPolygons + " 个3D效果建筑物";
                     }
                     updateStatus(statusMsg);
                     wwd.requestRedraw();
 
-                    Log.d(TAG, "Shapefile loading complete");
+                    Log.d(TAG, "Shapefile加载完成");
                 });
 
             } catch (Exception e) {
-                Log.e(TAG, "Error loading shapefile", e);
+                Log.e(TAG, "加载shapefile时出错", e);
                 e.printStackTrace();  // 打印完整堆栈跟踪
                 mainHandler.post(() -> {
-                    updateStatus("Error loading Shapefile: " + e.getMessage());
-                    Toast.makeText(this, "Failed to load Shapefile: " + e.getMessage(),
+                    updateStatus("加载Shapefile错误: " + e.getMessage());
+                    Toast.makeText(this, "加载Shapefile失败: " + e.getMessage(),
                             Toast.LENGTH_LONG).show();
                 });
             }
@@ -653,33 +652,33 @@ public class MyShapeLoadActivity extends AppCompatActivity {
     }
 
     /**
-     * Create a 3D building from a Shapefile polygon record
+     * 从Shapefile多边形记录创建3D建筑物
      *
-     * Features:
-     * - Creates bottom face, top face, side faces, and interior slices
-     * - Extracts building height from DBF attributes
-     * - Color mapping based on height (blue->green->yellow->orange->red)
-     * - RELATIVE_TO_GROUND altitude mode for 3D effect
+     * 特性:
+     * - 创建底面、顶面、侧面和内部切片
+     * - 从DBF属性提取建筑物高度
+     * - 基于高度的颜色映射(蓝色->绿色->黄色->橙色->红色)
+     * - RELATIVE_TO_GROUND高度模式用于3D效果
      *
-     * @param record Polygon record containing footprint coordinates
-     * @param attributes Optional attribute data from DBF file (including height)
-     * @return List of Polygon renderables forming the 3D building
+     * @param record 包含轮廓坐标的多边形记录
+     * @param attributes 来自DBF文件的可选属性数据(包括高度)
+     * @return 组成3D建筑物的多边形可渲染对象列表
      */
     private List<Polygon> createBuilding3D(ShapefileReader.PolygonRecord record,
                                            Map<String, Object> attributes) {
         List<Polygon> buildingPolygons = new ArrayList<>();
 
         try {
-            // Use the first part (outer ring)
+            // 使用第一部分(外环)
             List<ShapefileReader.Point> ring = record.parts.get(0);
 
-            // Extract building height
+            // 提取建筑物高度
             double buildingHeight = extractHeight(attributes);
 
-            // Get base color for this building based on height
+            // 基于高度获取此建筑物的基础颜色
             Color baseColor = getColorByHeight(buildingHeight);
 
-            // Create shared Position lists (baseRing and topRing)
+            // 创建共享的Position列表(baseRing和topRing)
             List<Position> baseRing = new ArrayList<>();
             List<Position> topRing = new ArrayList<>();
 
@@ -689,7 +688,7 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                 updateBoundingBox(point.y, point.x);
             }
 
-            // Ensure both rings are closed
+            // 确保两个环都是闭合的
             if (baseRing.size() > 0) {
                 Position first = baseRing.get(0);
                 Position last = baseRing.get(baseRing.size() - 1);
@@ -699,7 +698,7 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                 }
             }
 
-            // Create bottom polygon
+            // 创建底部多边形
             if (baseRing.size() >= 3) {
                 ShapeAttributes bottomAttrs = new ShapeAttributes();
                 Color bottomColor = new Color(
@@ -720,7 +719,7 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                 buildingPolygons.add(bottomPolygon);
             }
 
-            // Create top polygon
+            // 创建顶部多边形
             if (topRing.size() >= 3) {
                 ShapeAttributes topAttrs = new ShapeAttributes();
                 topAttrs.setInteriorColor(baseColor);
@@ -740,7 +739,7 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                 buildingPolygons.add(topPolygon);
             }
 
-            // Create side face polygons
+            // 创建侧面多边形
             Color sideColor = new Color(
                     baseColor.red * 0.65f,
                     baseColor.green * 0.65f,
@@ -779,7 +778,7 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                 buildingPolygons.add(sideFacePolygon);
             }
 
-            // Fill building interior with horizontal slices
+            // 用水平切片填充建筑物内部
             if (buildingHeight > 0 && baseRing.size() >= 3) {
                 int numInteriorLayers = Math.max(1, (int) (buildingHeight / 10.0));
                 numInteriorLayers = Math.min(numInteriorLayers, 10);
@@ -821,7 +820,7 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                 }
             }
 
-            // Update height statistics
+            // 更新高度统计
             if (buildingHeight > 0) {
                 buildingsWithHeight++;
                 minHeight = Math.min(minHeight, buildingHeight);
@@ -830,7 +829,7 @@ public class MyShapeLoadActivity extends AppCompatActivity {
             }
 
         } catch (Exception e) {
-            Log.w(TAG, "Error creating 3D building: " + e.getMessage());
+            Log.w(TAG, "创建3D建筑物时出错: " + e.getMessage());
         }
 
         return buildingPolygons;
@@ -838,55 +837,55 @@ public class MyShapeLoadActivity extends AppCompatActivity {
 
 
     /**
-     * Create a 3D building from a GridCell with complete building structure
+     * 从GridCell创建完整建筑结构的3D建筑物
      *
-     * Creates a 3D building representation with:
-     * - Bottom face at ground level (Z=0)
-     * - Top face at specified height
-     * - 4 vertical side faces connecting bottom and top
-     * - Interior horizontal slices for solid appearance
-     * - Color based on height using percentile distribution
-     * - ABSOLUTE altitude mode (PointZ data already has absolute heights)
+     * 创建3D建筑物表示，包含:
+     * - 地面层底面(Z=0)
+     * - 指定高度的顶面
+     * - 连接底部和顶部的4个垂直侧面
+     * - 用于实体外观的内部水平切片
+     * - 基于百分位分布的高度颜色
+     * - ABSOLUTE高度模式(PointZ数据已具有绝对高度)
      *
-     * This method mirrors the implementation in LoadShapeActivity.createBuilding3D
-     * but adapted for grid-based rectangular buildings instead of polygon footprints
+     * 此方法镜像了LoadShapeActivity.createBuilding3D中的实现
+     * 但适配为基于网格的矩形建筑而不是多边形轮廓
      *
-     * @param cell GridCell containing center coordinates
-     * @param gridSize Size of the grid cell in degrees
-     * @param height Building height in meters
-     * @return List of Polygon renderables forming the 3D building
+     * @param cell 包含中心坐标的GridCell
+     * @param gridSize 网格单元大小(度)
+     * @param height 建筑物高度(米)
+     * @return 组成3D建筑物的多边形可渲染对象列表
      */
     private List<Polygon> createGridBuilding3D(GridCell cell, double gridSize, double height) {
         List<Polygon> buildingPolygons = new ArrayList<>();
 
         try {
-            // Calculate grid rectangle's four corner points
+            // 计算网格矩形的四个角点
             double halfSize = gridSize / 2.0;
-            double lat1 = cell.centerLat - halfSize;  // South
-            double lat2 = cell.centerLat + halfSize;  // North
-            double lon1 = cell.centerLon - halfSize;  // West
-            double lon2 = cell.centerLon + halfSize;  // East
+            double lat1 = cell.centerLat - halfSize;  // 南
+            double lat2 = cell.centerLat + halfSize;  // 北
+            double lon1 = cell.centerLon - halfSize;  // 西
+            double lon2 = cell.centerLon + halfSize;  // 东
 
-            // Get base color for this building based on height
+            // 基于高度获取此建筑物的基础颜色
             Color baseColor = getColorByHeight(height);
 
-            // Create baseRing (bottom face, Z=0) - clockwise from bottom-left
+            // 创建baseRing(底面, Z=0) - 从左下角顺时针
             List<Position> baseRing = new ArrayList<>();
-            baseRing.add(Position.fromDegrees(lat1, lon1, 0));  // Bottom-left
-            baseRing.add(Position.fromDegrees(lat1, lon2, 0));  // Bottom-right
-            baseRing.add(Position.fromDegrees(lat2, lon2, 0));  // Top-right
-            baseRing.add(Position.fromDegrees(lat2, lon1, 0));  // Top-left
-            baseRing.add(Position.fromDegrees(lat1, lon1, 0));  // Close the ring
+            baseRing.add(Position.fromDegrees(lat1, lon1, 0));  // 左下
+            baseRing.add(Position.fromDegrees(lat1, lon2, 0));  // 右下
+            baseRing.add(Position.fromDegrees(lat2, lon2, 0));  // 右上
+            baseRing.add(Position.fromDegrees(lat2, lon1, 0));  // 左上
+            baseRing.add(Position.fromDegrees(lat1, lon1, 0));  // 闭合环
 
-            // Create topRing (top face, Z=height)
+            // 创建topRing(顶面, Z=height)
             List<Position> topRing = new ArrayList<>();
-            topRing.add(Position.fromDegrees(lat1, lon1, height));  // Bottom-left
-            topRing.add(Position.fromDegrees(lat1, lon2, height));  // Bottom-right
-            topRing.add(Position.fromDegrees(lat2, lon2, height));  // Top-right
-            topRing.add(Position.fromDegrees(lat2, lon1, height));  // Top-left
-            topRing.add(Position.fromDegrees(lat1, lon1, height));  // Close the ring
+            topRing.add(Position.fromDegrees(lat1, lon1, height));  // 左下
+            topRing.add(Position.fromDegrees(lat1, lon2, height));  // 右下
+            topRing.add(Position.fromDegrees(lat2, lon2, height));  // 右上
+            topRing.add(Position.fromDegrees(lat2, lon1, height));  // 左上
+            topRing.add(Position.fromDegrees(lat1, lon1, height));  // 闭合环
 
-            // Create bottom polygon (dark, semi-transparent)
+            // 创建底部多边形(深色，半透明)
             if (baseRing.size() >= 3) {
                 ShapeAttributes bottomAttrs = new ShapeAttributes();
                 Color bottomColor = new Color(
@@ -907,7 +906,7 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                 buildingPolygons.add(bottomPolygon);
             }
 
-            // Create top polygon (full baseColor with 0.6f alpha matching getColorByHeight)
+            // 创建顶部多边形(完整baseColor，0.6f alpha匹配getColorByHeight)
             if (topRing.size() >= 3) {
                 ShapeAttributes topAttrs = new ShapeAttributes();
                 topAttrs.setInteriorColor(baseColor);
@@ -927,7 +926,7 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                 buildingPolygons.add(topPolygon);
             }
 
-            // Create 4 side face polygons
+            // 创建4个侧面多边形
             Color sideColor = new Color(
                     baseColor.red * 0.65f,
                     baseColor.green * 0.65f,
@@ -946,7 +945,7 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                 sideFacePositions.add(bottomRight);
                 sideFacePositions.add(topRight);
                 sideFacePositions.add(topLeft);
-                sideFacePositions.add(bottomLeft);  // Close the face
+                sideFacePositions.add(bottomLeft);  // 闭合面
 
                 ShapeAttributes sideFaceAttrs = new ShapeAttributes();
                 sideFaceAttrs.setInteriorColor(sideColor);
@@ -966,7 +965,7 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                 buildingPolygons.add(sideFacePolygon);
             }
 
-            // Fill building interior with horizontal slices (1-10 layers based on height)
+            // 用水平切片填充建筑物内部(基于高度的1-10层)
             if (height > 0) {
                 int numInteriorLayers = Math.max(1, (int) (height / 10.0));
                 numInteriorLayers = Math.min(numInteriorLayers, 10);
@@ -993,7 +992,7 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                     slicePositions.add(Position.fromDegrees(lat1, lon2, layerHeight));
                     slicePositions.add(Position.fromDegrees(lat2, lon2, layerHeight));
                     slicePositions.add(Position.fromDegrees(lat2, lon1, layerHeight));
-                    slicePositions.add(Position.fromDegrees(lat1, lon1, layerHeight));  // Close
+                    slicePositions.add(Position.fromDegrees(lat1, lon1, layerHeight));  // 闭合
 
                     Polygon slicePolygon = new Polygon(slicePositions, interiorAttrs);
                     slicePolygon.setAltitudeMode(gov.nasa.worldwind.WorldWind.ABSOLUTE);
@@ -1002,12 +1001,12 @@ public class MyShapeLoadActivity extends AppCompatActivity {
                 }
             }
 
-            // Update bounding box
+            // 更新边界框
             updateBoundingBox(lat1, lon1);
             updateBoundingBox(lat2, lon2);
 
         } catch (Exception e) {
-            Log.w(TAG, "Error creating 3D grid building: " + e.getMessage());
+            Log.w(TAG, "创建3D网格建筑物时出错: " + e.getMessage());
         }
 
         return buildingPolygons;
@@ -1016,10 +1015,10 @@ public class MyShapeLoadActivity extends AppCompatActivity {
 
 
     /**
-     * Get shape type name from shape type code
+     * 从形状类型代码获取形状类型名称
      *
-     * @param shapeType Shape type code
-     * @return Human-readable shape type name
+     * @param shapeType 形状类型代码
+     * @return 人类可读的形状类型名称
      */
     private String getShapeTypeName(int shapeType) {
         switch (shapeType) {
@@ -1036,10 +1035,10 @@ public class MyShapeLoadActivity extends AppCompatActivity {
     }
 
     /**
-     * Extract building height from attributes
+     * 从属性中提取建筑物高度
      *
-     * @param attributes DBF attributes map
-     * @return Building height in meters (0 if not found or invalid)
+     * @param attributes DBF属性映射
+     * @return 建筑物高度(米)(如果未找到或无效则为0)
      */
     private double extractHeight(Map<String, Object> attributes) {
         if (attributes == null) return 50.0;
@@ -1058,51 +1057,51 @@ public class MyShapeLoadActivity extends AppCompatActivity {
             }
         }
 
-        return 50.0;  // Default height if no valid height field found
+        return 50.0;  // 如果没有找到有效的高度字段，则使用默认高度
     }
 
     /**
-     * Get color based on building height (heatmap effect)
+     * 基于建筑物高度获取颜色(热力图效果)
      *
-     * Uses dynamic percentile-based color mapping for better adaptation to actual data:
-     * - < P25: Blue (lowest 25%)
-     * - P25-P50: Cyan-Green (25%-50%)
-     * - P50-P75: Yellow (50%-75%)
-     * - P75-P95: Orange (75%-95%)
-     * - > P95: Red (highest 5%)
+     * 使用基于百分位数的动态颜色映射以更好地适应实际数据:
+     * - < P25: 蓝色(最低25%)
+     * - P25-P50: 青绿色(25%-50%)
+     * - P50-P75: 黄色(50%-75%)
+     * - P75-P95: 橙色(75%-95%)
+     * - > P95: 红色(最高5%)
      *
-     * Falls back to fixed thresholds if percentiles are not available
+     * 如果百分位数不可用，则回退到固定阈值
      *
-     * @param height Building height in meters
-     * @return Corresponding color
+     * @param height 建筑物高度(米)
+     * @return 对应的颜色
      */
     private Color getColorByHeight(double height) {
-        // Use dynamic percentile-based thresholds if available
+        // 如果可用，使用基于百分位数的动态阈值
         if (heightP95 > 0) {
-            // Dynamic mapping based on actual data distribution
+            // 基于实际数据分布的动态映射
             if (height < heightP25) {
-                return new Color(0.3f, 0.5f, 1.0f, 0.9f);       // Blue - lowest 25%
+                return new Color(0.3f, 0.5f, 1.0f, 0.9f);       // 蓝色 - 最低25%
             } else if (height < heightP50) {
-                return new Color(0.2f, 0.8f, 0.6f, 0.9f);       // Cyan-Green - 25%-50%
+                return new Color(0.2f, 0.8f, 0.6f, 0.9f);       // 青绿色 - 25%-50%
             } else if (height < heightP75) {
-                return new Color(1.0f, 0.9f, 0.2f, 0.9f);       // Yellow - 50%-75%
+                return new Color(1.0f, 0.9f, 0.2f, 0.9f);       // 黄色 - 50%-75%
             } else if (height < heightP95) {
-                return new Color(1.0f, 0.6f, 0.1f, 0.9f);       // Orange - 75%-95%
+                return new Color(1.0f, 0.6f, 0.1f, 0.9f);       // 橙色 - 75%-95%
             } else {
-                return new Color(1.0f, 0.2f, 0.1f, 0.9f);       // Red - highest 5%
+                return new Color(1.0f, 0.2f, 0.1f, 0.9f);       // 红色 - 最高5%
             }
         } else {
-            // Fallback to fixed thresholds for polygon data
-            if (height < 10) return new Color(0.3f, 0.5f, 1.0f, 0.9f);       // Blue - low buildings
-            else if (height < 30) return new Color(0.2f, 0.8f, 0.6f, 0.9f);  // Cyan-Green - low-medium
-            else if (height < 60) return new Color(1.0f, 0.9f, 0.2f, 0.9f);  // Yellow - medium
-            else if (height < 100) return new Color(1.0f, 0.6f, 0.1f, 0.9f); // Orange - medium-high
-            else return new Color(1.0f, 0.2f, 0.1f, 0.9f);                   // Red - high buildings
+            // 对于多边形数据回退到固定阈值
+            if (height < 10) return new Color(0.3f, 0.5f, 1.0f, 0.9f);       // 蓝色 - 低建筑
+            else if (height < 30) return new Color(0.2f, 0.8f, 0.6f, 0.9f);  // 青绿色 - 中低
+            else if (height < 60) return new Color(1.0f, 0.9f, 0.2f, 0.9f);  // 黄色 - 中等
+            else if (height < 100) return new Color(1.0f, 0.6f, 0.1f, 0.9f); // 橙色 - 中高
+            else return new Color(1.0f, 0.2f, 0.1f, 0.9f);                   // 红色 - 高建筑
         }
     }
 
     /**
-     * Update the bounding box with a new coordinate
+     * 用新坐标更新边界框
      */
     private void updateBoundingBox(double latitude, double longitude) {
         minLat = Math.min(minLat, latitude);
