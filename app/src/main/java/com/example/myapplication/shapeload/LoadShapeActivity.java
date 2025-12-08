@@ -246,7 +246,9 @@ public class LoadShapeActivity extends AppCompatActivity {
 
             // Create 3D building
             // 创建 3D 建筑
+            // 使用方案B（简化拉伸）渲染3D建筑，性能更优
             List<Polygon> buildingPolygons = createBuilding3D(record, attributes);
+//            List<Polygon> buildingPolygons = createOtherBuilding3D(record, attributes);
 
             // Add to layer on UI thread
             // 在 UI 线程上添加到图层
@@ -447,6 +449,159 @@ public class LoadShapeActivity extends AppCompatActivity {
 
         } catch (Exception e) {
             Log.w(TAG, "Error creating 3D building: " + e.getMessage());
+        }
+
+        return buildingPolygons;
+    }
+
+    /**
+     * Create a 3D building using Simplified Approach A (Top + Side Faces Only)
+     * 使用简化方案 A 创建 3D 建筑（仅顶面 + 侧面）
+     *
+     * IMPORTANT: WorldWind Android SDK does not support setExtrusionHeight(),
+     * setEnableCap(), or setEnableSides() methods. These are only available
+     * in WorldWind Java Desktop SDK.
+     *
+     * 重要提示：WorldWind Android SDK 不支持 setExtrusionHeight()、
+     * setEnableCap() 或 setEnableSides() 方法。这些方法仅在 WorldWind Java
+     * 桌面版 SDK 中可用。
+     *
+     * This implementation manually constructs 3D buildings by creating separate
+     * polygons for the top face and each side face. This is a simplified version
+     * of full Approach A - it omits the bottom face and interior slices to improve
+     * performance while maintaining a good visual effect.
+     *
+     * 本实现通过手动为顶面和每个侧面创建独立的多边形来构建 3D 建筑。这是完整方案 A
+     * 的简化版本 - 省略了底面和内部切片以提高性能，同时保持良好的视觉效果。
+     *
+     * Optimization vs Full Approach A:
+     * 相比完整方案 A 的优化：
+     * - NO bottom face (not visible from above, saves polygons)
+     * - 无底面（从上方不可见，节省多边形）
+     * - NO interior slices (reduces polygon count significantly)
+     * - 无内部切片（显著减少多边形数量）
+     * - ONLY top face + side faces (essential for 3D appearance)
+     * - 仅顶面 + 侧面（3D 外观的基本要素）
+     *
+     * @param record Shapefile polygon record containing geometry
+     * @param attributes Attribute map containing building properties (e.g., height)
+     * @return List of polygons representing the 3D building
+     */
+    private List<Polygon> createOtherBuilding3D(ShapefileReader.PolygonRecord record,
+                                                 Map<String, Object> attributes) {
+        List<Polygon> buildingPolygons = new ArrayList<>();
+
+        try {
+            // Use the first part (outer ring)
+            // 使用第一部分（外环）
+            List<ShapefileReader.Point> ring = record.parts.get(0);
+
+            // Extract building height from attributes
+            // 从属性中提取建筑高度
+            double buildingHeight = extractHeight(attributes);
+
+            // Get base color for this building based on height
+            // 根据高度获取此建筑的基础颜色
+            Color baseColor = getColorByHeight(buildingHeight);
+
+            // Create shared Position lists (baseRing at Z=0 and topRing at Z=buildingHeight)
+            // 创建共享的 Position 列表（baseRing 在 Z=0，topRing 在 Z=buildingHeight）
+            List<Position> baseRing = new ArrayList<>();
+            List<Position> topRing = new ArrayList<>();
+
+            for (ShapefileReader.Point point : ring) {
+                baseRing.add(Position.fromDegrees(point.y, point.x, 0));
+                topRing.add(Position.fromDegrees(point.y, point.x, buildingHeight));
+                updateBoundingBox(point.y, point.x);
+            }
+
+            // Ensure both rings are closed
+            // 确保两个环都闭合
+            if (baseRing.size() > 0) {
+                Position first = baseRing.get(0);
+                Position last = baseRing.get(baseRing.size() - 1);
+                if (first.latitude != last.latitude || first.longitude != last.longitude) {
+                    baseRing.add(first);
+                    topRing.add(topRing.get(0));
+                }
+            }
+
+            // Create top polygon (roof)
+            // 创建顶面多边形（屋顶）
+            if (topRing.size() >= 3) {
+                ShapeAttributes topAttrs = new ShapeAttributes();
+                topAttrs.setInteriorColor(baseColor);
+                topAttrs.setOutlineColor(new Color(
+                        baseColor.red * 0.7f,
+                        baseColor.green * 0.7f,
+                        baseColor.blue * 0.7f,
+                        1.0f
+                ));
+                topAttrs.setOutlineWidth(2f);
+                topAttrs.setDrawInterior(true);
+                topAttrs.setDrawOutline(true);
+
+                Polygon topPolygon = new Polygon(topRing, topAttrs);
+                topPolygon.setAltitudeMode(gov.nasa.worldwind.WorldWind.RELATIVE_TO_GROUND);
+                topPolygon.setFollowTerrain(false);
+                buildingPolygons.add(topPolygon);
+            }
+
+            // Create side face polygons (walls)
+            // 创建侧面多边形（墙壁）
+            // Each edge becomes a vertical rectangular face
+            // 每条边变成一个垂直的矩形面
+            Color sideColor = new Color(
+                    baseColor.red * 0.65f,
+                    baseColor.green * 0.65f,
+                    baseColor.blue * 0.65f,
+                    0.9f
+            );
+
+            for (int i = 0; i < baseRing.size() - 1; i++) {
+                Position bottomLeft = baseRing.get(i);
+                Position bottomRight = baseRing.get(i + 1);
+                Position topLeft = topRing.get(i);
+                Position topRight = topRing.get(i + 1);
+
+                // Create a quadrilateral for each side face
+                // 为每个侧面创建一个四边形
+                List<Position> sideFacePositions = new ArrayList<>();
+                sideFacePositions.add(bottomLeft);
+                sideFacePositions.add(bottomRight);
+                sideFacePositions.add(topRight);
+                sideFacePositions.add(topLeft);
+                sideFacePositions.add(bottomLeft); // Close the face
+
+                ShapeAttributes sideFaceAttrs = new ShapeAttributes();
+                sideFaceAttrs.setInteriorColor(sideColor);
+                sideFaceAttrs.setOutlineColor(new Color(
+                        baseColor.red * 0.5f,
+                        baseColor.green * 0.5f,
+                        baseColor.blue * 0.5f,
+                        0.8f
+                ));
+                sideFaceAttrs.setOutlineWidth(1f);
+                sideFaceAttrs.setDrawInterior(true);
+                sideFaceAttrs.setDrawOutline(true);
+
+                Polygon sideFacePolygon = new Polygon(sideFacePositions, sideFaceAttrs);
+                sideFacePolygon.setAltitudeMode(gov.nasa.worldwind.WorldWind.RELATIVE_TO_GROUND);
+                sideFacePolygon.setFollowTerrain(false);
+                buildingPolygons.add(sideFacePolygon);
+            }
+
+            // Update height statistics
+            // 更新高度统计
+            if (buildingHeight > 0) {
+                buildingsWithHeight++;
+                minHeight = Math.min(minHeight, buildingHeight);
+                maxHeight = Math.max(maxHeight, buildingHeight);
+                totalHeight += buildingHeight;
+            }
+
+        } catch (Exception e) {
+            Log.w(TAG, "Error creating 3D building with simplified approach A: " + e.getMessage());
         }
 
         return buildingPolygons;

@@ -97,8 +97,8 @@ public class MainActivity extends AppCompatActivity {
 //            LoadKMLActivity.start(this);
 //            LoadShapeActivity.start(this);
 //            LoadGEOActivity.start(this);
-            MyShapeLoadActivity.start(this);
-//            LoadLASActivity.start(this);
+//            MyShapeLoadActivity.start(this);
+            LoadLASActivity.start(this);
         });
 
         // 增加点大小按钮
